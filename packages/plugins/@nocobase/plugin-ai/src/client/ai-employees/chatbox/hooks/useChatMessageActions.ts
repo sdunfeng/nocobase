@@ -7,7 +7,7 @@
  * For more information, please refer to: https://www.nocobase.com/agreement.
  */
 
-import { useChatMessagesStore } from '../stores/chat-messages';
+import { useChat } from '../hooks/useChat';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAPIClient, useApp, usePlugin, useRequest } from '@nocobase/client';
 import { AIEmployee, Message, ResendOptions, SendOptions } from '../../types';
@@ -38,23 +38,23 @@ export const useChatMessageActions = () => {
   const setEditingMessageId = useChatBoxStore.use.setEditingMessageId();
   const setModel = useChatBoxStore.use.setModel();
 
-  const messages = useChatMessagesStore.use.messages();
-  const setMessages = useChatMessagesStore.use.setMessages();
-  const addMessage = useChatMessagesStore.use.addMessage();
-  const addMessages = useChatMessagesStore.use.addMessages();
-  const updateLastMessage = useChatMessagesStore.use.updateLastMessage();
-  const setResponseLoading = useChatMessagesStore.use.setResponseLoading();
-  const setAbortController = useChatMessagesStore.use.setAbortController();
-  const setAttachments = useChatMessagesStore.use.setAttachments();
-  const addAttachments = useChatMessagesStore.use.addAttachments();
-  const setContextItems = useChatMessagesStore.use.setContextItems();
-  const setWebSearching = useChatMessagesStore.use.setWebSearching();
-  const addSubAgentMessage = useChatMessagesStore.use.addSubAgentMessage();
-  const addSubAgentMessages = useChatMessagesStore.use.addSubAgentMessages();
-  const updateLastSubAgentMessage = useChatMessagesStore.use.updateLastSubAgentMessage();
-  const updateSubAgentConversationStatus = useChatMessagesStore.use.updateSubAgentConversationStatus();
-
   const currentConversation = useChatConversationsStore.use.currentConversation();
+  const chat = useChat(currentConversation);
+  const messages = chat.use.messages();
+  const setMessages = chat.use.setMessages();
+  const addMessage = chat.use.addMessage();
+  const addMessages = chat.use.addMessages();
+  const updateLastMessage = chat.use.updateLastMessage();
+  const setResponseLoading = chat.use.setResponseLoading();
+  const setAbortController = chat.use.setAbortController();
+  const setAttachments = chat.use.setAttachments();
+  const addAttachments = chat.use.addAttachments();
+  const setContextItems = chat.use.setContextItems();
+  const setWebSearching = chat.use.setWebSearching();
+  const addSubAgentMessage = chat.use.addSubAgentMessage();
+  const addSubAgentMessages = chat.use.addSubAgentMessages();
+  const updateLastSubAgentMessage = chat.use.updateLastSubAgentMessage();
+  const updateSubAgentConversationStatus = chat.use.updateSubAgentConversationStatus();
   const currentWebSearch = useChatConversationsStore.use.webSearch();
 
   const updateToolCallInvokeStatus = useChatToolCallStore.use.updateToolCallInvokeStatus();
@@ -637,7 +637,7 @@ export const useChatMessageActions = () => {
   };
 
   const cancelRequest = useCallback(async () => {
-    const controller = useChatMessagesStore.getState().abortController;
+    const controller = chat.getState().abortController;
     if (!controller) {
       return;
     }

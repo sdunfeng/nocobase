@@ -13,7 +13,7 @@ import { Spin, Layout, Divider, Button, Space, Typography } from 'antd';
 import { RightOutlined, DownOutlined, LoadingOutlined } from '@ant-design/icons';
 import { namespace, useT } from '../../locale';
 import { useAPIClient, useApp, useToken } from '@nocobase/client';
-import { useChatMessagesStore } from './stores/chat-messages';
+import { useChat } from './hooks/useChat';
 import { useChatMessageActions } from './hooks/useChatMessageActions';
 import { useChatBoxStore } from './stores/chat-box';
 import { useChatToolsStore } from './stores/chat-tools';
@@ -26,10 +26,12 @@ const { Text, Link } = Typography;
 export const Messages: React.FC = () => {
   const t = useT();
   const { token } = useToken();
+  const currentConversation = useChatConversationsStore.use.currentConversation();
+  const chat = useChat(currentConversation);
 
   const roles = useChatBoxStore.use.roles();
 
-  const messages = useChatMessagesStore.use.messages();
+  const messages = chat.use.messages();
 
   const updateTools = useChatToolsStore.use.updateTools();
 
@@ -174,8 +176,7 @@ export const Messages: React.FC = () => {
   };
 
   const app = useApp();
-  const currentConversation = useChatConversationsStore.use.currentConversation();
-  const setResponseLoading = useChatMessagesStore.use.setResponseLoading();
+  const setResponseLoading = chat.use.setResponseLoading();
   const { updateReadonly } = useWorkflowTasks();
   const onAIEmployeeTaskStatusUpdate = useCallback(
     (e: any) => {
@@ -241,12 +242,13 @@ const BackgroundWorkingHint: React.FC = () => {
   const t = useT();
   const { messagesService } = useChatMessageActions();
   const currentConversation = useChatConversationsStore.use.currentConversation?.();
+  const chat = useChat(currentConversation);
   const currentEmployee = useChatBoxStore.use.currentEmployee?.();
-  const messages = useChatMessagesStore.use.messages();
+  const messages = chat.use.messages();
   const [show, setShow] = useState(false);
   const messageCount = useRef(0);
   const { updateReadonly } = useWorkflowTasks();
-  const setResponseLoading = useChatMessagesStore.use.setResponseLoading();
+  const setResponseLoading = chat.use.setResponseLoading();
 
   const refreshMessages = useCallback(() => {
     if (currentConversation) {

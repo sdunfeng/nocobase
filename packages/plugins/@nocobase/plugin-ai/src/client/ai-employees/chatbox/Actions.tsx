@@ -14,8 +14,9 @@ import { Schema } from '@formily/react';
 import PluginAIClient from '../..';
 import { useT } from '../../locale';
 import { ActionOptions, ContextItem, Message } from '../types';
-import { useChatMessagesStore } from './stores/chat-messages';
+import { useChat } from './hooks/useChat';
 import { useChatBoxStore } from './stores/chat-box';
+import { useChatConversationsStore } from './stores/chat-conversations';
 
 export const Actions: React.FC<{
   message: Message & { messageId: string };
@@ -24,9 +25,11 @@ export const Actions: React.FC<{
 }> = ({ responseType, message, value }) => {
   const t = useT();
   const plugin = usePlugin('ai') as PluginAIClient;
+  const currentConversation = useChatConversationsStore.use.currentConversation();
+  const chat = useChat(currentConversation);
 
-  const messages = useChatMessagesStore.use.messages();
-  const responseLoading = useChatMessagesStore.use.responseLoading();
+  const messages = chat.use.messages();
+  const responseLoading = chat.use.responseLoading();
 
   const currentEmployee = useChatBoxStore.use.currentEmployee();
 

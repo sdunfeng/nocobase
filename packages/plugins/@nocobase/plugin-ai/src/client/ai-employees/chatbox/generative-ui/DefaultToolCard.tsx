@@ -23,9 +23,10 @@ import {
 import { ToolCall, ToolsEntry, toToolsMap, useToken, lazy } from '@nocobase/client';
 import { Schema } from '@formily/react';
 import { useToolCallActions } from '../hooks/useToolCallActions';
-import { useChatMessagesStore } from '../stores/chat-messages';
+import { useChat } from '../hooks/useChat';
 import { css, keyframes } from '@emotion/css';
 import { useChatBoxStore } from '../stores/chat-box';
+import { useChatConversationsStore } from '../stores/chat-conversations';
 
 const { CodeHighlight } = lazy(() => import('../../common/CodeHighlight'), 'CodeHighlight');
 
@@ -220,8 +221,10 @@ export const DefaultToolCard: React.FC<{
   inlineActions?: React.ReactNode;
 }> = ({ messageId, tools, toolCalls, inlineActions }) => {
   const toolsMap = toToolsMap(tools);
-  const messages = useChatMessagesStore.use.messages();
-  const responseLoading = useChatMessagesStore.use.responseLoading();
+  const currentConversation = useChatConversationsStore.use.currentConversation();
+  const chat = useChat(currentConversation);
+  const messages = chat.use.messages();
+  const responseLoading = chat.use.responseLoading();
   const generating = responseLoading && messages[messages.length - 1]?.content?.messageId === messageId;
   const hasAutoExpanded = useRef(false);
 

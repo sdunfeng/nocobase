@@ -8,7 +8,8 @@
  */
 
 import { ToolsOptions } from '@nocobase/client';
-import { useChatMessagesStore } from '../../chatbox/stores/chat-messages';
+import { useChat } from '../../chatbox/hooks/useChat';
+import { useChatConversationsStore } from '../../chatbox/stores/chat-conversations';
 import { FlowContext } from '@nocobase/flow-engine';
 
 export const getContextApisTool: [string, ToolsOptions] = [
@@ -19,7 +20,9 @@ export const getContextApisTool: [string, ToolsOptions] = [
       return result ?? {};
     },
     useHooks() {
-      this.flowContext = useChatMessagesStore.use.flowContext();
+      const currentConversation = useChatConversationsStore.use.currentConversation();
+      const chat = useChat(currentConversation);
+      this.flowContext = chat.use.flowContext();
       return this;
     },
   },
@@ -33,7 +36,9 @@ export const getContextEnvsTool: [string, ToolsOptions] = [
       return result ?? {};
     },
     useHooks() {
-      this.flowContext = useChatMessagesStore.use.flowContext();
+      const currentConversation = useChatConversationsStore.use.currentConversation();
+      const chat = useChat(currentConversation);
+      this.flowContext = chat.use.flowContext();
       return this;
     },
   },
@@ -50,7 +55,9 @@ export const getContextVarsTool: [string, ToolsOptions] = [
       return result ?? {};
     },
     useHooks() {
-      this.flowContext = useChatMessagesStore.use.flowContext();
+      const currentConversation = useChatConversationsStore.use.currentConversation();
+      const chat = useChat(currentConversation);
+      this.flowContext = chat.use.flowContext();
       return this;
     },
   },
@@ -90,7 +97,9 @@ export const lintAndTestJSTool: [string, ToolsOptions] = [
       }
     },
     useHooks() {
-      this.flowContext = useChatMessagesStore.use.flowContext();
+      const currentConversation = useChatConversationsStore.use.currentConversation();
+      const chat = useChat(currentConversation);
+      this.flowContext = chat.use.flowContext();
       return this;
     },
   },
