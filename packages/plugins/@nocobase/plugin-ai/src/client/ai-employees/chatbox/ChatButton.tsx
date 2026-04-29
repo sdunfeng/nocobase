@@ -20,7 +20,6 @@ import { isLeader } from '../built-in/utils';
 import { useLocation } from 'react-router-dom';
 import { useWorkflowTasks } from './hooks/useWorkflowTasks';
 import { useChat } from './hooks/useChat';
-import { useChatConversationsStore } from './stores/chat-conversations';
 
 export const ChatButton: React.FC = observer(() => {
   const ctx = useFlowContext<FlowRuntimeContext>();
@@ -39,11 +38,9 @@ export const ChatButton: React.FC = observer(() => {
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
   const open = useChatBoxStore.use.open();
-  const currentConversation = useChatConversationsStore.use.currentConversation();
-  const chat = useChat(currentConversation);
+  const chat = useChat();
   const setOpen = useChatBoxStore.use.setOpen();
   const setReadonly = useChatBoxStore.use.setReadonly();
-  const setResponseLoading = chat.use.setResponseLoading();
 
   const { switchAIEmployee } = useChatBoxActions();
 
@@ -59,7 +56,7 @@ export const ChatButton: React.FC = observer(() => {
         onClick={() => {
           setDropdownOpen(false);
           setReadonly(false);
-          setResponseLoading(false);
+          chat.setResponseLoading(false);
           setOpen(true);
           const leaderEmployee = aiEmployees.find(isLeader);
           if (leaderEmployee) {

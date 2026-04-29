@@ -38,7 +38,6 @@ export const useWorkflowTasksList = ({ onOpenConversation }: UseWorkflowTasksLis
   const currentConversation = useChatConversationsStore.use.currentConversation();
   const chat = useChat(currentConversation);
   const setReadonly = useChatBoxStore.use.setReadonly();
-  const setResponseLoading = chat.use.setResponseLoading();
   const [pendingConversation, setPendingConversation] = useState<string>();
 
   useEffect(() => {
@@ -68,14 +67,14 @@ export const useWorkflowTasksList = ({ onOpenConversation }: UseWorkflowTasksLis
           model = undefined;
         }
         setReadonly(readonly);
-        setResponseLoading(responseLoading);
+        chat.for(sessionId).setResponseLoading(responseLoading);
         onOpenConversation(sessionId, username, model);
       } catch (error) {
         setPendingConversation(undefined);
         throw error;
       }
     },
-    [acceptWorkflowTask, getWorkflowTaskBySession, onOpenConversation, setReadonly, setResponseLoading],
+    [acceptWorkflowTask, chat, getWorkflowTaskBySession, onOpenConversation, setReadonly],
   );
 
   return {

@@ -176,7 +176,7 @@ export const Messages: React.FC = () => {
   };
 
   const app = useApp();
-  const setResponseLoading = chat.use.setResponseLoading();
+  const setResponseLoading = chat.setResponseLoading;
   const { updateReadonly } = useWorkflowTasks();
   const onAIEmployeeTaskStatusUpdate = useCallback(
     (e: any) => {
@@ -248,7 +248,7 @@ const BackgroundWorkingHint: React.FC = () => {
   const [show, setShow] = useState(false);
   const messageCount = useRef(0);
   const { updateReadonly } = useWorkflowTasks();
-  const setResponseLoading = chat.use.setResponseLoading();
+  const setResponseLoading = chat.setResponseLoading;
 
   const refreshMessages = useCallback(() => {
     if (currentConversation) {

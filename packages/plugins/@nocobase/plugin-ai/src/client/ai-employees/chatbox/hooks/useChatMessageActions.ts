@@ -41,25 +41,18 @@ export const useChatMessageActions = () => {
   const currentConversation = useChatConversationsStore.use.currentConversation();
   const chat = useChat(currentConversation);
   const messages = chat.use.messages();
-  const setMessages = chat.use.setMessages();
-  const addMessage = chat.use.addMessage();
-  const addMessages = chat.use.addMessages();
-  const updateLastMessage = chat.use.updateLastMessage();
-  const setResponseLoading = chat.use.setResponseLoading();
-  const setAbortController = chat.use.setAbortController();
-  const setAttachments = chat.use.setAttachments();
-  const addAttachments = chat.use.addAttachments();
-  const setContextItems = chat.use.setContextItems();
-  const setWebSearching = chat.use.setWebSearching();
-  const addSubAgentMessage = chat.use.addSubAgentMessage();
-  const addSubAgentMessages = chat.use.addSubAgentMessages();
-  const updateLastSubAgentMessage = chat.use.updateLastSubAgentMessage();
-  const updateSubAgentConversationStatus = chat.use.updateSubAgentConversationStatus();
+  const abortController = chat.use.abortController();
+  const setMessages = chat.setMessages;
+  const setResponseLoading = chat.setResponseLoading;
+  const setAbortController = chat.setAbortController;
+  const setAttachments = chat.setAttachments;
+  const setContextItems = chat.setContextItems;
   const currentWebSearch = useChatConversationsStore.use.webSearch();
 
   const updateToolCallInvokeStatus = useChatToolCallStore.use.updateToolCallInvokeStatus();
 
   const renderedMessages = useMemo(() => flattenMessages(messages), [messages]);
+  const getSessionChat = useCallback((sessionId?: string) => chat.for(sessionId).getState(), [chat]);
 
   const ensureModelFromStore = useCallback(
     async (username?: string) => {
@@ -81,6 +74,7 @@ export const useChatMessageActions = () => {
 
   const syncContextAttachments = useCallback(
     (items: ContextItem | ContextItem[]) => {
+      const sessionChat = getSessionChat(useChatConversationsStore.getState().currentConversation);
       const contextItems = Array.isArray(items) ? items : [items];
       for (const item of contextItems.filter((it) => it.type?.startsWith('flow-model'))) {
         const model = app.flowEngine.getModel(item.uid, true);
@@ -93,12 +87,12 @@ export const useChatMessageActions = () => {
             subModel.props?.value?.length &&
             typeof subModel.props.value !== 'string'
           ) {
-            addAttachments(subModel.props.value.map((it) => ({ ...it, status: 'done' })));
+            sessionChat.addAttachments(subModel.props.value.map((it) => ({ ...it, status: 'done' })));
           }
         });
       }
     },
-    [app, addAttachments],
+    [app, getSessionChat],
   );
 
   const messagesService = useRequest<{
@@ -117,6 +111,7 @@ export const useChatMessageActions = () => {
           paginate: false,
         })
         .then((res) => {
+          const sessionChat = getSessionChat(sessionId);
           const data = res?.data;
           if (!data?.data) {
             return;
@@ -148,7 +143,7 @@ export const useChatMessageActions = () => {
             }
           }
 
-          setMessages((prev) => {
+          sessionChat.setMessages((prev) => {
             const last = prev[prev.length - 1];
             const result = cursor ? [...newMessages, ...prev] : newMessages;
             if (last?.role === 'error') {
@@ -165,6 +160,7 @@ export const useChatMessageActions = () => {
   messagesServiceRef.current = messagesService;
 
   const processStreamResponse = async (stream: any, sessionId: string, aiEmployee: AIEmployee) => {
+    const sessionChat = getSessionChat(sessionId);
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     let result = '';
@@ -314,7 +310,7 @@ export const useChatMessageActions = () => {
           actions: data.body,
         });
         for (const item of data.body) {
-          setWebSearching(item);
+          sessionChat.setWebSearching(item);
         }
       }
     };
@@ -345,8 +341,8 @@ export const useChatMessageActions = () => {
     };
 
     const mainAgentMessageStore = {
-      addMessage,
-      updateLast: updateLastMessage,
+      addMessage: sessionChat.addMessage,
+      updateLast: sessionChat.updateLastMessage,
     };
 
     try {
@@ -354,8 +350,8 @@ export const useChatMessageActions = () => {
       while (true) {
         const { done, value } = await reader.read();
         if (done || error) {
-          setResponseLoading(false);
-          setWebSearching(null);
+          sessionChat.setResponseLoading(false);
+          sessionChat.setWebSearching(null);
           break;
         }
 
@@ -379,20 +375,23 @@ export const useChatMessageActions = () => {
               processToolCallChunks(data, mainAgentMessageStore);
               processToolCall(data, mainAgentMessageStore);
               processToolCallStatus(data, mainAgentMessageStore);
-              processWebSearch(data);
+              processWebSearch({
+                ...data,
+                sessionId,
+              });
             } else if (data.from === 'sub-agent') {
               const subAgentMessageStore = {
                 addMessage: (msg: Message) => {
                   msg.role = data.username;
-                  addSubAgentMessage(data.sessionId, msg);
+                  sessionChat.addSubAgentMessage(data.sessionId, msg);
                 },
                 updateLast: (updater: (msg: Message) => Message) => {
-                  updateLastSubAgentMessage(data.sessionId, data.username, updater);
+                  sessionChat.updateLastSubAgentMessage(data.sessionId, data.username, updater);
                 },
               };
 
               if (data.type === 'sub_agent_completed') {
-                updateSubAgentConversationStatus(data.sessionId, 'completed');
+                sessionChat.updateSubAgentConversationStatus(data.sessionId, 'completed');
               }
 
               processNewMessage(data, subAgentMessageStore);
@@ -401,7 +400,10 @@ export const useChatMessageActions = () => {
               processToolCallChunks(data, subAgentMessageStore);
               processToolCall(data, subAgentMessageStore);
               processToolCallStatus(data, subAgentMessageStore);
-              processWebSearch(data);
+              processWebSearch({
+                ...data,
+                sessionId,
+              });
             }
           } catch (e) {
             console.error('Error parsing stream data:', e);
@@ -424,7 +426,7 @@ export const useChatMessageActions = () => {
     }
 
     if (error) {
-      updateLastMessage((last) => ({
+      sessionChat.updateLastMessage((last) => ({
         ...last,
         role: 'error',
         loading: false,
@@ -454,6 +456,9 @@ export const useChatMessageActions = () => {
     onConversationCreate?: (sessionId: string) => void;
   }) => {
     if (!sendMsgs.length) return;
+    const draftSessionId = sessionId;
+    let targetSessionId = sessionId;
+    let sessionChat = getSessionChat(targetSessionId);
 
     // Read model from store at call time to avoid stale closure
     const model = inputModel ?? useChatBoxStore.getState().model;
@@ -474,11 +479,13 @@ export const useChatMessageActions = () => {
       { employeeId: aiEmployee?.username, employeeName: aiEmployee?.nickname },
     );
 
-    const last = messages[messages.length - 1];
+    const sessionMessages = sessionChat.messages;
+    const renderedSessionMessages = flattenMessages(sessionMessages);
+    const last = sessionMessages[sessionMessages.length - 1];
     if (last?.role === 'error') {
-      setMessages((prev) => prev.slice(0, -1));
+      sessionChat.setMessages((prev) => prev.slice(0, -1));
     }
-    const lastRenderedMessage = renderedMessages.at(-1);
+    const lastRenderedMessage = renderedSessionMessages.at(-1);
 
     const parsedWorkContext = await parseWorkContext(app, workContext);
     const msgs = sendMsgs.map((msg, index) => ({
@@ -489,7 +496,7 @@ export const useChatMessageActions = () => {
       workContext: index === 0 ? parsedWorkContext : undefined,
     }));
     if (lastRenderedMessage?.type === 'conversation-group' && !isEditingMessage) {
-      addSubAgentMessages(
+      sessionChat.addSubAgentMessages(
         lastRenderedMessage.key,
         sendMsgs.map((msg, index) => ({
           key: uid(),
@@ -502,7 +509,7 @@ export const useChatMessageActions = () => {
         })),
       );
     } else {
-      addMessages(
+      sessionChat.addMessages(
         sendMsgs.map((msg, index) => ({
           key: uid(),
           role: 'user',
@@ -522,20 +529,23 @@ export const useChatMessageActions = () => {
       const conversation = createRes?.data?.data;
       if (!conversation) return;
       sessionId = conversation.sessionId;
+      targetSessionId = sessionId;
+      chat.for(draftSessionId).migrateSessionState(sessionId);
+      sessionChat = getSessionChat(sessionId);
       onConversationCreate?.(sessionId);
     }
 
-    setResponseLoading(true);
+    sessionChat.setResponseLoading(true);
 
     if (lastRenderedMessage?.type === 'conversation-group' && !isEditingMessage) {
-      addSubAgentMessage(lastRenderedMessage.key, {
+      sessionChat.addSubAgentMessage(lastRenderedMessage.key, {
         key: uid(),
         role: lastRenderedMessage.roleName,
         content: { type: 'text', content: '' },
         loading: true,
       });
     } else {
-      addMessage({
+      sessionChat.addMessage({
         key: uid(),
         role: aiEmployee.username,
         content: { type: 'text', content: '' },
@@ -544,7 +554,7 @@ export const useChatMessageActions = () => {
     }
 
     const controller = new AbortController();
-    setAbortController(controller);
+    sessionChat.setAbortController(controller);
     try {
       const sendRes = await api.request({
         url: 'aiConversations:sendMessages',
@@ -566,7 +576,7 @@ export const useChatMessageActions = () => {
       });
 
       if (!sendRes?.data) {
-        setResponseLoading(false);
+        sessionChat.setResponseLoading(false);
         return;
       }
 
@@ -575,17 +585,18 @@ export const useChatMessageActions = () => {
       if (err.name === 'CanceledError') {
         return;
       }
-      setResponseLoading(false);
+      sessionChat.setResponseLoading(false);
       throw err;
     } finally {
-      setAbortController(null);
+      sessionChat.setAbortController(null);
     }
   };
 
   const resendMessages = async ({ sessionId, messageId, aiEmployee, important }: ResendOptions) => {
-    const index = messages.findIndex((msg) => msg.key === messageId);
-    setResponseLoading(true);
-    setMessages((prev) => [
+    const sessionChat = getSessionChat(sessionId);
+    const index = sessionChat.messages.findIndex((msg) => msg.key === messageId);
+    sessionChat.setResponseLoading(true);
+    sessionChat.setMessages((prev) => [
       ...prev.slice(0, index),
       {
         key: uid(),
@@ -606,7 +617,7 @@ export const useChatMessageActions = () => {
     }
 
     const controller = new AbortController();
-    setAbortController(controller);
+    sessionChat.setAbortController(controller);
     try {
       const sendRes = await api.request({
         url: 'aiConversations:resendMessages',
@@ -620,7 +631,7 @@ export const useChatMessageActions = () => {
       });
 
       if (!sendRes?.data) {
-        setResponseLoading(false);
+        sessionChat.setResponseLoading(false);
         return;
       }
 
@@ -629,15 +640,15 @@ export const useChatMessageActions = () => {
       if (err.name === 'CanceledError') {
         return;
       }
-      setResponseLoading(false);
+      sessionChat.setResponseLoading(false);
       throw err;
     } finally {
-      setAbortController(null);
+      sessionChat.setAbortController(null);
     }
   };
 
   const cancelRequest = useCallback(async () => {
-    const controller = chat.getState().abortController;
+    const controller = abortController;
     if (!controller) {
       return;
     }
@@ -652,7 +663,7 @@ export const useChatMessageActions = () => {
     await new Promise((resolve) => setTimeout(resolve, 500));
     messagesServiceRef.current.run(currentConversation);
     setResponseLoading(false);
-  }, [currentConversation]);
+  }, [abortController, api, currentConversation, setAbortController, setResponseLoading]);
 
   const resumeToolCall = useCallback(
     async ({
@@ -668,7 +679,8 @@ export const useChatMessageActions = () => {
       toolCallIds?: string[];
       toolCallResults?: { id: string; [key: string]: any }[];
     }) => {
-      setResponseLoading(true);
+      const sessionChat = getSessionChat(sessionId);
+      sessionChat.setResponseLoading(true);
       // Read model from store at call time to avoid stale closure.
       // If not ready yet, resolve it through shared model rules.
       let model = useChatBoxStore.getState().model;
@@ -676,7 +688,7 @@ export const useChatMessageActions = () => {
         model = await ensureModelFromStore(aiEmployee?.username);
       }
       const controller = new AbortController();
-      setAbortController(controller);
+      sessionChat.setAbortController(controller);
       try {
         const sendRes = await api.request({
           url: 'aiConversations:resumeToolCall',
@@ -689,7 +701,7 @@ export const useChatMessageActions = () => {
         });
 
         if (!sendRes?.data) {
-          setResponseLoading(false);
+          sessionChat.setResponseLoading(false);
           return;
         }
 
@@ -698,13 +710,13 @@ export const useChatMessageActions = () => {
         if (err.name === 'CanceledError') {
           return;
         }
-        setResponseLoading(false);
+        sessionChat.setResponseLoading(false);
         throw err;
       } finally {
-        setAbortController(null);
+        sessionChat.setAbortController(null);
       }
     },
-    [currentWebSearch, ensureModelFromStore],
+    [currentWebSearch, ensureModelFromStore, getSessionChat],
   );
 
   const loadMoreMessages = useCallback(async () => {
