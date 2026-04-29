@@ -15,9 +15,11 @@ import {
   type FlowSurfaceDefaultBlockActionDescriptor,
 } from '../default-block-actions';
 import {
+  assertFlowSurfaceConcreteDefaultFilterItem,
   backfillFlowSurfaceFilterActionDefaultFilter,
   normalizeFlowSurfacePublicBlockDefaultFilter,
 } from '../public-data-surface-default-filter';
+import { normalizeFlowSurfacePublicSortingAlias } from '../public-compatibility';
 import {
   FLOW_SURFACE_APPLY_BLUEPRINT_POPUP_DEFAULTS_KEY,
   attachFlowSurfaceApplyBlueprintPopupDefaults,
@@ -49,6 +51,11 @@ import {
   readOptionalString,
   readString,
 } from './private-utils';
+import {
+  assertNoInternalFieldKeys,
+  normalizePublicFieldNameList,
+  normalizePublicFieldType,
+} from '../field-type-resolver';
 
 type FlowSurfaceCompiledBlocks = {
   blocks: any[];
@@ -63,6 +70,7 @@ type FlowSurfaceCompiledPopup = {
 const APPLY_BLUEPRINT_BLOCK_TYPE_ENUM = [
   'table',
   'calendar',
+  'kanban',
   'createForm',
   'editForm',
   'details',
@@ -74,6 +82,7 @@ const APPLY_BLUEPRINT_BLOCK_TYPE_ENUM = [
   'chart',
   'actionPanel',
   'jsBlock',
+  'tree',
 ] as const;
 
 const APPLY_BLUEPRINT_BLOCK_ALLOWED_KEYS = [
@@ -104,6 +113,13 @@ const APPLY_BLUEPRINT_FIELD_ALLOWED_KEYS = [
   'associationPathName',
   'renderer',
   'type',
+  'fieldType',
+  'fields',
+  'titleField',
+  'openMode',
+  'popupSize',
+  'pageSize',
+  'showIndex',
   'label',
   'target',
   'settings',
@@ -175,6 +191,9 @@ function assertApplyBlueprintFieldsLayoutHost(block: Record<string, any>, contex
   if (!Object.prototype.hasOwnProperty.call(block, 'fieldsLayout')) {
     return;
   }
+  if (readOptionalString(block.type) === 'kanban') {
+    throwBadRequest(`${context}.fieldsLayout is not supported on kanban main blocks; use fields[] only`);
+  }
   if (APPLY_BLUEPRINT_FIELD_GRID_BLOCK_TYPES.has(readOptionalString(block.type) || '')) {
     return;
   }
@@ -199,6 +218,36 @@ function assertApplyBlueprintCalendarMainContent(block: Record<string, any>, con
     throwBadRequest(
       `${context}.recordActions is not supported on calendar main blocks; configure event actions inside the event-view popup host instead`,
     );
+  }
+}
+
+function assertApplyBlueprintKanbanMainContent(block: Record<string, any>, context: string) {
+  if (readOptionalString(block.type) !== 'kanban') {
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(block, 'fieldGroups')) {
+    throwBadRequest(`${context}.fieldGroups is not supported on kanban main blocks; use fields instead`);
+  }
+  if (Object.prototype.hasOwnProperty.call(block, 'recordActions')) {
+    throwBadRequest(`${context}.recordActions is not supported on kanban main blocks in v1`);
+  }
+}
+
+function assertApplyBlueprintTreeMainContent(block: Record<string, any>, context: string) {
+  if (readOptionalString(block.type) !== 'tree') {
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(block, 'fields')) {
+    throwBadRequest(`${context}.fields is not supported on tree blocks`);
+  }
+  if (Object.prototype.hasOwnProperty.call(block, 'fieldGroups')) {
+    throwBadRequest(`${context}.fieldGroups is not supported on tree blocks`);
+  }
+  if (Object.prototype.hasOwnProperty.call(block, 'actions')) {
+    throwBadRequest(`${context}.actions is not supported on tree blocks`);
+  }
+  if (Object.prototype.hasOwnProperty.call(block, 'recordActions')) {
+    throwBadRequest(`${context}.recordActions is not supported on tree blocks`);
   }
 }
 
@@ -932,6 +981,68 @@ function resolveTargetBlockKey(value: any, localBlockKeys: Map<string, string>, 
   throwBadRequest(`${context} must be a string block key`);
 }
 
+function collectTreeConnectTargetKeys(settings: any, context: string) {
+  if (!_.isPlainObject(settings?.connectFields)) {
+    return [];
+  }
+  if (_.isUndefined(settings.connectFields.targets)) {
+    return [];
+  }
+  if (!Array.isArray(settings.connectFields.targets)) {
+    throwBadRequest(`${context}.settings.connectFields.targets must be an array`);
+  }
+  const seenTargets = new Set<string>();
+  return settings.connectFields.targets
+    .map((target: any, targetIndex: number) => {
+      if (!_.isPlainObject(target)) {
+        throwBadRequest(`${context}.settings.connectFields.targets[${targetIndex}] must be an object`);
+      }
+      if (_.isUndefined(target.target) || target.target === null || target.target === '') {
+        return '';
+      }
+      if (typeof target.target !== 'string') {
+        throwBadRequest(`${context}.settings.connectFields.targets[${targetIndex}].target must be a string block key`);
+      }
+      const normalizedTarget = normalizeFlowSurfaceComposeKey(
+        target.target,
+        `${context}.settings.connectFields.targets[${targetIndex}].target`,
+      );
+      if (seenTargets.has(normalizedTarget)) {
+        throwBadRequest(
+          `${context}.settings.connectFields.targets[${targetIndex}].target duplicate target '${normalizedTarget}' in tree connectFields`,
+        );
+      }
+      seenTargets.add(normalizedTarget);
+      return normalizedTarget;
+    })
+    .filter(Boolean);
+}
+
+function compileTreeConnectSettingsTargets(
+  settings: Record<string, any>,
+  localBlockKeys: Map<string, string>,
+  context: string,
+) {
+  if (!_.isPlainObject(settings?.connectFields) || !Array.isArray(settings.connectFields.targets)) {
+    return settings;
+  }
+  const nextSettings = _.cloneDeep(settings);
+  nextSettings.connectFields.targets = nextSettings.connectFields.targets.map((target: any, targetIndex: number) => {
+    if (!_.isPlainObject(target) || _.isUndefined(target.target) || target.target === null || target.target === '') {
+      return target;
+    }
+    return {
+      ...target,
+      target: resolveTargetBlockKey(
+        target.target,
+        localBlockKeys,
+        `${context}.settings.connectFields.targets[${targetIndex}].target`,
+      ),
+    };
+  });
+  return nextSettings;
+}
+
 function compileField(
   input: string | FlowSurfaceApplyBlueprintFieldObjectSpec,
   index: number,
@@ -957,8 +1068,12 @@ function compileField(
     throwBadRequest(`${context}[${index}] must be a string or object`);
   }
   assertOnlyAllowedKeys(input, `${context}[${index}]`, APPLY_BLUEPRINT_FIELD_ALLOWED_KEYS);
+  assertNoInternalFieldKeys(input, `${context}[${index}]`);
+  assertNoInternalFieldKeys(input.settings, `${context}[${index}].settings`);
   const fieldPath = readOptionalString(input.field);
   const syntheticType = readOptionalString(input.type);
+  const fieldType = normalizePublicFieldType((input as any).fieldType, `${context}[${index}]`);
+  const fields = normalizePublicFieldNameList((input as any).fields, `${context}[${index}].fields`);
   if (!fieldPath && !syntheticType) {
     throwBadRequest(`${context}[${index}] requires field or type`);
   }
@@ -986,6 +1101,13 @@ function compileField(
     associationPathName: readOptionalString(input.associationPathName),
     renderer: readOptionalString(input.renderer),
     type: syntheticType,
+    fieldType,
+    fields,
+    titleField: readOptionalString((input as any).titleField),
+    openMode: readOptionalString((input as any).openMode),
+    popupSize: readOptionalString((input as any).popupSize),
+    pageSize: (input as any).pageSize,
+    showIndex: (input as any).showIndex,
     target: resolveTargetBlockKey(input.target, localBlockKeys, `${context}[${index}].target`),
     settings: Object.keys(settings).length ? settings : undefined,
     popup,
@@ -1076,7 +1198,12 @@ function compileBlocks(
       throwBadRequest(`${context}[${index}] must be an object`);
     }
     assertApplyBlueprintCalendarMainContent(block, `${context}[${index}]`);
+    assertApplyBlueprintKanbanMainContent(block, `${context}[${index}]`);
+    assertApplyBlueprintTreeMainContent(block, `${context}[${index}]`);
     const fields = resolveBlockFieldInputs(block, `${context}[${index}]`);
+    collectTreeConnectTargetKeys(block.settings, `${context}[${index}]`).forEach((targetKey) => {
+      referencedBlockKeys.add(targetKey);
+    });
     fields.forEach((field: any, fieldIndex: number) => {
       if (typeof field?.target !== 'string' || !field.target.trim()) {
         return;
@@ -1096,6 +1223,8 @@ function compileBlocks(
     assertOnlyAllowedKeys(block, `${context}[${index}]`, APPLY_BLUEPRINT_BLOCK_ALLOWED_KEYS);
     assertApplyBlueprintBlockType(readOptionalString(block.type), `${context}[${index}]`);
     assertApplyBlueprintCalendarMainContent(block, `${context}[${index}]`);
+    assertApplyBlueprintKanbanMainContent(block, `${context}[${index}]`);
+    assertApplyBlueprintTreeMainContent(block, `${context}[${index}]`);
     const explicitKey = readString(block.key);
     const fallback = block.type ? `${block.type}_${index + 1}` : `block_${index + 1}`;
     const localKey = normalizeBlueprintLocalKey(block.key, fallback, `${context}[${index}].key`);
@@ -1122,17 +1251,27 @@ function compileBlocks(
     if (!key) {
       throwBadRequest(`${blockContext} key '${localKey}' is missing after block key compilation`);
     }
-    const settings = resolveAssetSettings(block.settings, block, assets, blockContext);
+    const blockType = readOptionalString(block.type);
+    let settings = resolveAssetSettings(block.settings, block, assets, blockContext);
     if (readOptionalString(block.title) && _.isUndefined(settings.title)) {
       settings.title = readOptionalString(block.title);
     }
-    const blockType = readOptionalString(block.type);
+    settings = normalizeFlowSurfacePublicSortingAlias({
+      context: `${blockContext}.settings`,
+      type: blockType,
+      settings,
+    });
     const template = ensureOptionalTemplate(block.template, `${blockContext}.template`);
     const blockDefaultFilter = normalizeFlowSurfacePublicBlockDefaultFilter('applyBlueprint', block.defaultFilter, {
       blockType,
       template,
       path: blockContext,
     });
+    if (!_.isUndefined(blockDefaultFilter)) {
+      assertFlowSurfaceConcreteDefaultFilterItem('applyBlueprint', blockDefaultFilter, {
+        path: blockContext,
+      });
+    }
     const fieldInputs = resolveBlockFieldInputs(block, blockContext);
     const fields = fieldInputs.map((field, fieldIndex) =>
       compileField(
@@ -1192,11 +1331,17 @@ function compileBlocks(
       type: blockType,
       resource: buildBlockResource(block, blockContext),
       template,
-      settings: Object.keys(settings).length ? settings : undefined,
-      fields: blockType === 'calendar' ? undefined : fields,
-      fieldsLayout: blockType === 'calendar' ? undefined : fieldsLayout,
-      actions: actionsWithDefaultFilter,
-      recordActions: blockType === 'calendar' ? undefined : mergedActions.recordActions,
+      settings: Object.keys(settings).length
+        ? compileTreeConnectSettingsTargets(settings, blockKeysByLocalKey, blockContext)
+        : undefined,
+      fields: blockType === 'calendar' || blockType === 'tree' ? undefined : fields,
+      fieldsLayout:
+        blockType === 'calendar' || blockType === 'kanban' || blockType === 'tree' ? undefined : fieldsLayout,
+      actions: blockType === 'tree' ? undefined : actionsWithDefaultFilter,
+      recordActions:
+        blockType === 'calendar' || blockType === 'kanban' || blockType === 'tree'
+          ? undefined
+          : mergedActions.recordActions,
     });
   });
 

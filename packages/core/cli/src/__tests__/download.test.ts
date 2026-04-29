@@ -10,9 +10,9 @@
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, test, vi, expect } from 'vitest';
-import type { DownloadResolvedFlags } from '../commands/download.js';
-import Download from '../commands/download.js';
+import { afterEach, beforeEach, test, vi, expect } from 'vitest';
+import type { DownloadResolvedFlags } from '../commands/source/download.js';
+import Download from '../commands/source/download.js';
 
 const mocks = vi.hoisted(() => ({
   run: vi.fn(),
@@ -36,6 +36,11 @@ vi.mock('../lib/ui.ts', () => ({
 }));
 
 const tempDirs: string[] = [];
+const originalNbLocale = process.env.NB_LOCALE;
+
+beforeEach(() => {
+  process.env.NB_LOCALE = 'en-US';
+});
 
 afterEach(async () => {
   mocks.run.mockReset();
@@ -46,6 +51,11 @@ afterEach(async () => {
   mocks.stopTask.mockReset();
   vi.restoreAllMocks();
   vi.useRealTimers();
+  if (originalNbLocale === undefined) {
+    delete process.env.NB_LOCALE;
+  } else {
+    process.env.NB_LOCALE = originalNbLocale;
+  }
   await Promise.all(tempDirs.splice(0).map((dir) => fsp.rm(dir, { recursive: true, force: true })));
 });
 
@@ -192,7 +202,7 @@ test('downloadFromGit maps alpha to develop and builds with --no-dts by default'
     ],
   ]);
   expect(runCommand.mock.calls).toEqual([
-    ['build', ['--cwd', path.join(cwd, 'repo'), '--no-dts']],
+    ['source:build', ['--cwd', path.join(cwd, 'repo'), '--no-dts']],
   ]);
 });
 
@@ -232,7 +242,7 @@ test('download forwards raw command output only in verbose mode', async () => {
     ],
   ]);
   expect(runCommand.mock.calls).toEqual([
-    ['build', ['--cwd', path.join(cwd, 'repo'), '--no-dts', '--verbose']],
+    ['source:build', ['--cwd', path.join(cwd, 'repo'), '--no-dts', '--verbose']],
   ]);
 });
 
@@ -311,4 +321,207 @@ test('download shows a preparation loading state before entering the source-spec
 
   expect(result.projectRoot).toBe(path.join(process.cwd(), 'app'));
   expect(mocks.stopTask.mock.calls.length).toBe(1);
+});
+
+test('download formats dependency install failures in non-verbose mode', async () => {
+  await useTempCwd();
+  const { command } = createCommand();
+  command.parse = vi.fn(async () => ({
+    flags: {
+      yes: true,
+      verbose: false,
+      'no-intro': true,
+    },
+  })) as never;
+
+  (command as Download & { resolveDownloadFlags: (flags: unknown) => Promise<DownloadResolvedFlags> }).resolveDownloadFlags =
+    vi.fn(async () => ({
+      source: 'git',
+      version: 'alpha',
+      replace: false,
+      build: true,
+      'build-dts': false,
+      'output-dir': './repo',
+      'git-url': 'https://github.com/nocobase/nocobase.git',
+    })) as never;
+  (command as Download & { downloadFromGit: (flags: DownloadResolvedFlags) => Promise<string> }).downloadFromGit =
+    vi.fn(async () => {
+      throw new Error('yarn install exited with code 1');
+    }) as never;
+
+  await expect(command.run()).rejects.toThrow(
+    [
+      "Couldn't finish preparing the local NocoBase app.",
+      'The download completed, but dependency installation did not finish successfully.',
+      'Run the same command again with `--verbose` to see the full install logs.',
+    ].join('\n'),
+  );
+});
+
+test('download formats build failures in non-verbose mode', async () => {
+  await useTempCwd();
+  const { command } = createCommand();
+  command.parse = vi.fn(async () => ({
+    flags: {
+      yes: true,
+      verbose: false,
+      'no-intro': true,
+    },
+  })) as never;
+
+  (command as Download & { resolveDownloadFlags: (flags: unknown) => Promise<DownloadResolvedFlags> }).resolveDownloadFlags =
+    vi.fn(async () => ({
+      source: 'npm',
+      version: 'alpha',
+      replace: false,
+      build: true,
+      'build-dts': false,
+      'output-dir': './app',
+    })) as never;
+  (command as Download & { downloadFromNpm: (flags: DownloadResolvedFlags) => Promise<string> }).downloadFromNpm =
+    vi.fn(async () => {
+      throw new Error('nocobase command exited with code 1');
+    }) as never;
+
+  await expect(command.run()).rejects.toThrow(
+    [
+      'The local NocoBase app was downloaded, but the build step failed.',
+      'The CLI could not finish building the downloaded source code.',
+      'Run the same command again with `--verbose` to see the full build logs.',
+    ].join('\n'),
+  );
+});
+
+test('download formats unexpected subprocess failures in non-verbose mode', async () => {
+  await useTempCwd();
+  const { command } = createCommand();
+  command.parse = vi.fn(async () => ({
+    flags: {
+      yes: true,
+      verbose: false,
+      'no-intro': true,
+    },
+  })) as never;
+
+  (command as Download & { resolveDownloadFlags: (flags: unknown) => Promise<DownloadResolvedFlags> }).resolveDownloadFlags =
+    vi.fn(async () => ({
+      source: 'docker',
+      version: 'alpha',
+      replace: false,
+      build: true,
+      'build-dts': false,
+      'docker-registry': 'nocobase/nocobase',
+      'docker-save': false,
+    })) as never;
+  (command as Download & { downloadFromDocker: (flags: DownloadResolvedFlags) => Promise<void> }).downloadFromDocker =
+    vi.fn(async () => {
+      throw new Error('some command exited with code 1');
+    }) as never;
+
+  await expect(command.run()).rejects.toThrow(
+    [
+      "Couldn't finish downloading NocoBase.",
+      'The CLI hit an unexpected command failure while preparing the download.',
+      'Run the same command again with `--verbose` to see the full command logs.',
+    ].join('\n'),
+  );
+});
+
+test('download preserves raw failures in verbose mode', async () => {
+  await useTempCwd();
+  const { command } = createCommand();
+  command.parse = vi.fn(async () => ({
+    flags: {
+      yes: true,
+      verbose: true,
+      'no-intro': true,
+    },
+  })) as never;
+
+  (command as Download & { resolveDownloadFlags: (flags: unknown) => Promise<DownloadResolvedFlags> }).resolveDownloadFlags =
+    vi.fn(async () => ({
+      source: 'git',
+      version: 'alpha',
+      replace: false,
+      build: true,
+      'build-dts': false,
+      'output-dir': './repo',
+      'git-url': 'https://github.com/nocobase/nocobase.git',
+    })) as never;
+  (command as Download & { downloadFromGit: (flags: DownloadResolvedFlags) => Promise<string> }).downloadFromGit =
+    vi.fn(async () => {
+      throw new Error('yarn install exited with code 1');
+    }) as never;
+
+  await expect(command.run()).rejects.toThrow('yarn install exited with code 1');
+});
+
+test('downloadFromDocker uses the locale-aware default registry when docker-registry is not set', async () => {
+  await useTempCwd();
+  process.env.NB_LOCALE = 'zh-CN';
+  mocks.run.mockResolvedValue(undefined);
+  const { command } = createCommand();
+  const flags: DownloadResolvedFlags = {
+    source: 'docker',
+    version: 'alpha',
+    replace: false,
+    build: true,
+    'build-dts': false,
+    'docker-save': false,
+  };
+
+  await command.downloadFromDocker(flags);
+
+  expect(mocks.run.mock.calls[0]?.[1]).toEqual([
+    'pull',
+    'registry.cn-shanghai.aliyuncs.com/nocobase/nocobase:alpha',
+  ]);
+});
+
+test('download resolves otherVersion into the final version value', async () => {
+  const { command } = createCommand();
+  const resolved = (
+    command as Download & {
+      mapCatalogResultsToResolved: (
+        results: Record<string, string | boolean | number>,
+        flags: Record<string, unknown>,
+      ) => DownloadResolvedFlags;
+    }
+  ).mapCatalogResultsToResolved(
+    {
+      source: 'git',
+      version: 'other',
+      otherVersion: 'fix/cli-v2',
+      build: true,
+      buildDts: false,
+    },
+    {
+      build: true,
+      'build-dts': false,
+      replace: false,
+      'dev-dependencies': false,
+      'docker-save': false,
+    },
+  );
+
+  expect(resolved.version).toBe('fix/cli-v2');
+});
+
+test('download preserves custom --version values through prompt presets', () => {
+  const { command } = createCommand();
+  const preset = (
+    command as Download & {
+      buildPresetValuesFromFlags: (flags: Record<string, unknown>) => Record<string, unknown>;
+    }
+  ).buildPresetValuesFromFlags({
+    version: 'fix/cli-v2',
+    build: true,
+    'build-dts': false,
+    replace: false,
+    'dev-dependencies': false,
+    'docker-save': false,
+  });
+
+  expect(preset.version).toBe('other');
+  expect(preset.otherVersion).toBe('fix/cli-v2');
 });

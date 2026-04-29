@@ -13,19 +13,20 @@ import path from 'node:path';
 import { test, expect } from 'vitest';
 import { saveAuthConfig } from '../lib/auth-store.js';
 import { buildDockerAppContainerName, resolveManagedAppRuntime } from '../lib/app-runtime.js';
+import { resolveCliHomeRoot } from '../lib/cli-home.js';
 
 async function withTempCliHome(run: () => Promise<void>) {
-  const previous = process.env.NOCOBASE_CTL_HOME;
+  const previous = process.env.NB_CLI_ROOT;
   const tempHome = await mkdtemp(path.join(os.tmpdir(), 'nocobase-cli-runtime-'));
-  process.env.NOCOBASE_CTL_HOME = tempHome;
+  process.env.NB_CLI_ROOT = tempHome;
 
   try {
     await run();
   } finally {
     if (previous === undefined) {
-      delete process.env.NOCOBASE_CTL_HOME;
+      delete process.env.NB_CLI_ROOT;
     } else {
-      process.env.NOCOBASE_CTL_HOME = previous;
+      process.env.NB_CLI_ROOT = previous;
     }
     await rm(tempHome, { recursive: true, force: true });
   }
@@ -35,7 +36,7 @@ test('buildDockerAppContainerName keeps workspace-scoped naming consistent', () 
   expect(buildDockerAppContainerName('Local_01', 'NB Demo Workspace')).toBe('nb-demo-workspace-local_01-app');
 });
 
-test('resolveManagedAppRuntime detects local, docker, and remote envs', async () => {
+test('resolveManagedAppRuntime detects local, docker, and http envs', async () => {
   await withTempCliHome(async () => {
     await saveAuthConfig(
       {
@@ -71,11 +72,13 @@ test('resolveManagedAppRuntime detects local, docker, and remote envs', async ()
       kind: 'local',
       source: 'git',
     });
-    expect(localRuntime?.kind === 'local' ? localRuntime.projectRoot : '').toMatch(/apps\/git-env$/);
+    expect(localRuntime?.kind === 'local' ? localRuntime.projectRoot : '').toBe(
+      path.resolve(resolveCliHomeRoot(), './apps/git-env'),
+    );
 
     const remoteRuntime = await resolveManagedAppRuntime('remote');
     expect(remoteRuntime && { kind: remoteRuntime.kind, source: remoteRuntime.source }).toEqual({
-      kind: 'remote',
+      kind: 'http',
       source: undefined,
     });
   });

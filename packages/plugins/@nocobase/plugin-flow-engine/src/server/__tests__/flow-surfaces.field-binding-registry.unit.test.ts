@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { resolveSupportedFieldCapability } from '../flow-surfaces/catalog';
+import { getSupportedFieldComponentUseSet, resolveSupportedFieldCapability } from '../flow-surfaces/catalog';
 
 describe('flowSurfaces field binding registry', () => {
   it('should prefer file-manager attachment bindings over titleField fallback models', () => {
@@ -67,6 +67,38 @@ describe('flowSurfaces field binding registry', () => {
     ).toBe('DisplayPreviewFieldModel');
   });
 
+  it('should keep plain URL display fields on the core URL binding when file-manager is enabled', () => {
+    const enabledPackages = new Set(['@nocobase/plugin-file-manager']);
+    const urlField = {
+      interface: 'url',
+      type: 'text',
+    };
+
+    expect(
+      resolveSupportedFieldCapability({
+        containerUse: 'TableBlockModel',
+        field: urlField,
+        enabledPackages,
+      }),
+    ).toMatchObject({
+      wrapperUse: 'TableColumnModel',
+      fieldUse: 'DisplayURLFieldModel',
+      inferredFieldUse: 'DisplayURLFieldModel',
+    });
+
+    expect(
+      resolveSupportedFieldCapability({
+        containerUse: 'DetailsBlockModel',
+        field: urlField,
+        enabledPackages,
+      }),
+    ).toMatchObject({
+      wrapperUse: 'DetailsItemModel',
+      fieldUse: 'DisplayURLFieldModel',
+      inferredFieldUse: 'DisplayURLFieldModel',
+    });
+  });
+
   it('should resolve plugin-backed non-core field interfaces to their registered model strings', () => {
     const enabledPackages = new Set(['@nocobase/plugin-field-code', '@nocobase/plugin-field-formula']);
 
@@ -116,5 +148,181 @@ describe('flowSurfaces field binding registry', () => {
         enabledPackages,
       }).fieldUse,
     ).toBe('NumberFieldModel');
+  });
+
+  it('should keep core fallback field bindings aligned with the frontend defaults and allowed use sets', () => {
+    expect(
+      resolveSupportedFieldCapability({
+        containerUse: 'TableBlockModel',
+        field: {
+          interface: 'select',
+          type: 'string',
+        },
+      }),
+    ).toMatchObject({
+      wrapperUse: 'TableColumnModel',
+      fieldUse: 'DisplayEnumFieldModel',
+    });
+
+    expect(
+      resolveSupportedFieldCapability({
+        containerUse: 'DetailsBlockModel',
+        field: {
+          interface: 'tableoid',
+          type: 'virtual',
+        },
+      }),
+    ).toMatchObject({
+      wrapperUse: 'DetailsItemModel',
+      fieldUse: 'DisplayEnumFieldModel',
+    });
+
+    expect(
+      resolveSupportedFieldCapability({
+        containerUse: 'CreateFormModel',
+        field: {
+          interface: 'radioGroup',
+          type: 'string',
+        },
+      }),
+    ).toMatchObject({
+      wrapperUse: 'FormItemModel',
+      fieldUse: 'RadioGroupFieldModel',
+    });
+
+    expect(
+      resolveSupportedFieldCapability({
+        containerUse: 'EditFormModel',
+        field: {
+          interface: 'checkboxGroup',
+          type: 'array',
+        },
+      }),
+    ).toMatchObject({
+      wrapperUse: 'FormItemModel',
+      fieldUse: 'CheckboxGroupFieldModel',
+    });
+
+    expect(
+      resolveSupportedFieldCapability({
+        containerUse: 'EditFormModel',
+        field: {
+          interface: 'collection',
+          type: 'string',
+        },
+      }),
+    ).toMatchObject({
+      wrapperUse: 'FormItemModel',
+      fieldUse: 'CollectionSelectorFieldModel',
+    });
+
+    expect(
+      resolveSupportedFieldCapability({
+        containerUse: 'FilterFormBlockModel',
+        field: {
+          interface: 'select',
+          type: 'string',
+        },
+      }),
+    ).toMatchObject({
+      wrapperUse: 'FilterFormItemModel',
+      fieldUse: 'SelectFieldModel',
+    });
+
+    expect(
+      resolveSupportedFieldCapability({
+        containerUse: 'FilterFormBlockModel',
+        field: {
+          interface: 'checkbox',
+          type: 'boolean',
+        },
+      }),
+    ).toMatchObject({
+      wrapperUse: 'FilterFormItemModel',
+      fieldUse: 'SelectFieldModel',
+    });
+
+    expect(
+      resolveSupportedFieldCapability({
+        containerUse: 'FilterFormBlockModel',
+        field: {
+          interface: 'number',
+          type: 'integer',
+        },
+      }),
+    ).toMatchObject({
+      wrapperUse: 'FilterFormItemModel',
+      fieldUse: 'NumberFieldModel',
+    });
+
+    expect(
+      getSupportedFieldComponentUseSet({
+        containerUse: 'CreateFormModel',
+        field: {
+          interface: 'radioGroup',
+          type: 'string',
+        },
+      }),
+    ).toEqual(expect.any(Set));
+    expect(
+      getSupportedFieldComponentUseSet({
+        containerUse: 'CreateFormModel',
+        field: {
+          interface: 'radioGroup',
+          type: 'string',
+        },
+      })?.has('RadioGroupFieldModel'),
+    ).toBe(true);
+    expect(
+      getSupportedFieldComponentUseSet({
+        containerUse: 'CreateFormModel',
+        field: {
+          interface: 'checkboxGroup',
+          type: 'array',
+        },
+      })?.has('CheckboxGroupFieldModel'),
+    ).toBe(true);
+  });
+
+  it('should expose generic relation field component sets that back public fieldType options', () => {
+    const singleAssociationField = {
+      interface: 'm2o',
+      targetCollection: {
+        template: 'general',
+      },
+    };
+    const multiAssociationField = {
+      interface: 'm2m',
+      targetCollection: {
+        template: 'general',
+      },
+    };
+
+    expect(
+      Array.from(
+        getSupportedFieldComponentUseSet({ containerUse: 'FormItemModel', field: singleAssociationField }) || [],
+      ),
+    ).toEqual(['RecordSelectFieldModel', 'RecordPickerFieldModel', 'SubFormFieldModel']);
+    expect(
+      Array.from(
+        getSupportedFieldComponentUseSet({ containerUse: 'FormItemModel', field: multiAssociationField }) || [],
+      ),
+    ).toEqual([
+      'RecordSelectFieldModel',
+      'RecordPickerFieldModel',
+      'SubFormListFieldModel',
+      'SubTableFieldModel',
+      'PopupSubTableFieldModel',
+    ]);
+    expect(
+      Array.from(
+        getSupportedFieldComponentUseSet({ containerUse: 'DetailsItemModel', field: multiAssociationField }) || [],
+      ),
+    ).toEqual(['DisplayTextFieldModel', 'DisplaySubListFieldModel', 'DisplaySubTableFieldModel']);
+    expect(
+      Array.from(
+        getSupportedFieldComponentUseSet({ containerUse: 'TableColumnModel', field: multiAssociationField }) || [],
+      ),
+    ).toEqual(['DisplayTextFieldModel', 'DisplaySubListFieldModel', 'DisplaySubTableFieldModel']);
   });
 });

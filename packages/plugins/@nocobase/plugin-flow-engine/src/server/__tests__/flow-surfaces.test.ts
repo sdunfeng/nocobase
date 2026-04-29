@@ -697,6 +697,24 @@ describe('flowSurfaces resource', () => {
       `resourceInit does not match popup binding 'currentRecord'`,
     );
 
+    const invalidAssociationSemanticBinding = await rootAgent.resource('flowSurfaces').addBlock({
+      values: {
+        target: {
+          uid: associationPopupAction.uid,
+        },
+        type: 'details',
+        resource: {
+          binding: 'associatedRecords',
+          associationField: 'employee',
+        },
+      },
+    });
+    expect(invalidAssociationSemanticBinding.status).toBe(400);
+    expect(readErrorMessage(invalidAssociationSemanticBinding)).toContain(
+      `does not support resource.binding='associatedRecords'`,
+    );
+    expect(readErrorMessage(invalidAssociationSemanticBinding)).toContain('currentRecord');
+
     const associationPopupSurface = await getSurface(rootAgent, {
       uid: associationPopupAction.uid,
     });
@@ -864,6 +882,7 @@ describe('flowSurfaces resource', () => {
     expect(tableReadback.tree.stepParams?.tableSettings?.quickEdit).toMatchObject({
       editable: true,
     });
+    expect(tableReadback.tree.stepParams?.tableSettings?.defaultSorting?.sort).toEqual([]);
 
     const validCreateFormSettings = await rootAgent.resource('flowSurfaces').updateSettings({
       values: {
@@ -880,12 +899,20 @@ describe('flowSurfaces resource', () => {
               colon: false,
             },
             assignRules: {
-              value: [],
+              value: [
+                {
+                  key: 'preserve-until-cleared',
+                },
+              ],
             },
           },
           eventSettings: {
             linkageRules: {
-              value: [],
+              value: [
+                {
+                  key: 'preserve-linkage-until-cleared',
+                },
+              ],
             },
           },
         },
@@ -934,9 +961,46 @@ describe('flowSurfaces resource', () => {
       labelWrap: false,
       colon: false,
     });
-    expect(createFormReadback.tree.stepParams?.eventSettings?.linkageRules).toMatchObject({
-      value: [],
+    expect(createFormReadback.tree.stepParams?.formModelSettings?.assignRules).toMatchObject({
+      value: [
+        {
+          key: 'preserve-until-cleared',
+        },
+      ],
     });
+    expect(createFormReadback.tree.stepParams?.eventSettings?.linkageRules).toMatchObject({
+      value: [
+        {
+          key: 'preserve-linkage-until-cleared',
+        },
+      ],
+    });
+
+    const clearCreateFormArrays = await rootAgent.resource('flowSurfaces').updateSettings({
+      values: {
+        target: {
+          uid: createFormUid,
+        },
+        stepParams: {
+          formModelSettings: {
+            assignRules: {
+              value: [],
+            },
+          },
+          eventSettings: {
+            linkageRules: {
+              value: [],
+            },
+          },
+        },
+      },
+    });
+    expect(clearCreateFormArrays.status).toBe(200);
+    const createFormAfterClear = await getSurface(rootAgent, {
+      uid: createFormUid,
+    });
+    expect(createFormAfterClear.tree.stepParams?.formModelSettings?.assignRules?.value).toEqual([]);
+    expect(createFormAfterClear.tree.stepParams?.eventSettings?.linkageRules?.value).toEqual([]);
 
     const validEditFormSettings = await rootAgent.resource('flowSurfaces').updateSettings({
       values: {
@@ -1158,6 +1222,65 @@ describe('flowSurfaces resource', () => {
       icon: 'DownOutlined',
     });
     expect(expandCollapseReadback.tree.stepParams?.buttonSettings?.general?.title).toBeUndefined();
+  });
+
+  it('should ignore button type for actions directly under an action panel', async () => {
+    const page = await createPage(rootAgent, {
+      title: 'Action panel button type page',
+      tabTitle: 'Action panel button type tab',
+    });
+    const actionPanelUid = await addBlock(rootAgent, page.tabSchemaUid, 'actionPanel', {});
+    const createFormUid = await addBlock(rootAgent, page.tabSchemaUid, 'createForm', {
+      dataSourceKey: 'main',
+      collectionName: 'employees',
+    });
+
+    const panelJsAction = await addAction(rootAgent, actionPanelUid, 'js', {
+      settings: {
+        title: 'Run panel code',
+        type: 'primary',
+        code: "return 'panel';",
+        version: '1.0.0',
+      },
+    });
+    const panelReadback = await getSurface(rootAgent, { uid: panelJsAction.uid });
+    expect(panelReadback.tree.use).toBe('JSActionModel');
+    expect(panelReadback.tree.props?.title).toBe('Run panel code');
+    expect(panelReadback.tree.stepParams?.buttonSettings?.general?.title).toBe('Run panel code');
+    expect(panelReadback.tree.stepParams?.clickSettings?.runJs).toMatchObject({
+      code: "return 'panel';",
+      version: '1.0.0',
+    });
+    expect(panelReadback.tree.props?.type).not.toBe('primary');
+    expect(panelReadback.tree.stepParams?.buttonSettings?.general?.type).not.toBe('primary');
+
+    const configurePanelRes = await rootAgent.resource('flowSurfaces').configure({
+      values: {
+        target: { uid: panelJsAction.uid },
+        changes: {
+          title: 'Run panel code configured',
+          type: 'primary',
+        },
+      },
+    });
+    expect(configurePanelRes.status).toBe(200);
+    const configuredPanelReadback = await getSurface(rootAgent, { uid: panelJsAction.uid });
+    expect(configuredPanelReadback.tree.props?.title).toBe('Run panel code configured');
+    expect(configuredPanelReadback.tree.props?.type).not.toBe('primary');
+    expect(configuredPanelReadback.tree.stepParams?.buttonSettings?.general?.type).not.toBe('primary');
+
+    const formJsAction = await addAction(rootAgent, createFormUid, 'js', {
+      settings: {
+        title: 'Run form code',
+        type: 'primary',
+        code: "return 'form';",
+        version: '1.0.0',
+      },
+    });
+    const formReadback = await getSurface(rootAgent, { uid: formJsAction.uid });
+    expect(formReadback.tree.use).toBe('JSFormActionModel');
+    expect(formReadback.tree.props?.type).toBe('primary');
+    expect(formReadback.tree.stepParams?.buttonSettings?.general?.type).toBe('primary');
   });
 
   it('should persist canonical block headers through configure for representative block families', async () => {
@@ -1816,7 +1939,7 @@ describe('flowSurfaces resource', () => {
       title: 'Default filter addBlock page',
       tabTitle: 'Default filter addBlock tab',
     });
-    const defaultFilter = {
+    const usersDefaultFilter = {
       logic: '$and',
       items: [
         {
@@ -1831,21 +1954,61 @@ describe('flowSurfaces resource', () => {
         },
       ],
     };
+    const calendarDefaultFilter = {
+      logic: '$and',
+      items: [
+        {
+          path: 'title',
+          operator: '$includes',
+          value: '',
+        },
+        {
+          path: 'status',
+          operator: '$eq',
+          value: '',
+        },
+      ],
+    };
 
-    for (const blockType of ['table', 'list', 'gridCard']) {
+    for (const blockCase of [
+      {
+        type: 'table',
+        collectionName: 'users',
+        filterableFieldNames: ['username', 'email'],
+        defaultFilter: usersDefaultFilter,
+      },
+      {
+        type: 'list',
+        collectionName: 'users',
+        filterableFieldNames: ['username', 'email'],
+        defaultFilter: usersDefaultFilter,
+      },
+      {
+        type: 'gridCard',
+        collectionName: 'users',
+        filterableFieldNames: ['username', 'email'],
+        defaultFilter: usersDefaultFilter,
+      },
+      {
+        type: 'calendar',
+        collectionName: 'calendar_events',
+        filterableFieldNames: ['title', 'status'],
+        defaultFilter: calendarDefaultFilter,
+      },
+    ]) {
       const blockUid = await addBlock(
         rootAgent,
         page.tabSchemaUid,
-        blockType,
+        blockCase.type,
         {
           dataSourceKey: 'main',
-          collectionName: 'users',
+          collectionName: blockCase.collectionName,
         },
         {
           defaultActionSettings: {
             filter: {
-              filterableFieldNames: ['username', 'email'],
-              defaultFilter,
+              filterableFieldNames: blockCase.filterableFieldNames,
+              defaultFilter: blockCase.defaultFilter,
             },
           },
         },
@@ -1857,14 +2020,13 @@ describe('flowSurfaces resource', () => {
       const filterAction = _.castArray(readback.tree.subModels?.actions || []).find(
         (item: any) => item?.use === 'FilterActionModel',
       );
-      expect(filterAction?.props?.filterableFieldNames).toEqual(['username', 'email']);
-      expect(filterAction?.props?.defaultFilterValue).toEqual(defaultFilter);
-      expect(filterAction?.props?.filterValue).toEqual(defaultFilter);
-      expect(filterAction?.stepParams?.filterSettings?.filterableFieldNames?.filterableFieldNames).toEqual([
-        'username',
-        'email',
-      ]);
-      expect(filterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(defaultFilter);
+      expect(filterAction?.props?.filterableFieldNames).toEqual(blockCase.filterableFieldNames);
+      expect(filterAction?.props?.defaultFilterValue).toEqual(blockCase.defaultFilter);
+      expect(filterAction?.props?.filterValue).toEqual(blockCase.defaultFilter);
+      expect(filterAction?.stepParams?.filterSettings?.filterableFieldNames?.filterableFieldNames).toEqual(
+        blockCase.filterableFieldNames,
+      );
+      expect(filterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(blockCase.defaultFilter);
     }
   });
 
@@ -1873,7 +2035,7 @@ describe('flowSurfaces resource', () => {
       title: 'Block default filter addBlock page',
       tabTitle: 'Block default filter addBlock tab',
     });
-    const defaultFilter = {
+    const usersDefaultFilter = {
       logic: '$and',
       items: [
         {
@@ -1883,18 +2045,33 @@ describe('flowSurfaces resource', () => {
         },
       ],
     };
+    const calendarDefaultFilter = {
+      logic: '$and',
+      items: [
+        {
+          path: 'title',
+          operator: '$includes',
+          value: 'planning',
+        },
+      ],
+    };
 
-    for (const blockType of ['table', 'list', 'gridCard']) {
+    for (const blockCase of [
+      { type: 'table', collectionName: 'users', defaultFilter: usersDefaultFilter },
+      { type: 'list', collectionName: 'users', defaultFilter: usersDefaultFilter },
+      { type: 'gridCard', collectionName: 'users', defaultFilter: usersDefaultFilter },
+      { type: 'calendar', collectionName: 'calendar_events', defaultFilter: calendarDefaultFilter },
+    ]) {
       const blockUid = await addBlock(
         rootAgent,
         page.tabSchemaUid,
-        blockType,
+        blockCase.type,
         {
           dataSourceKey: 'main',
-          collectionName: 'users',
+          collectionName: blockCase.collectionName,
         },
         {
-          defaultFilter,
+          defaultFilter: blockCase.defaultFilter,
         },
       );
 
@@ -1904,11 +2081,53 @@ describe('flowSurfaces resource', () => {
       const filterAction = _.castArray(readback.tree.subModels?.actions || []).find(
         (item: any) => item?.use === 'FilterActionModel',
       );
-      expect(filterAction?.props?.defaultFilterValue).toEqual(defaultFilter);
-      expect(filterAction?.props?.filterValue).toEqual(defaultFilter);
-      expect(filterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(defaultFilter);
+      expect(filterAction?.props?.defaultFilterValue).toEqual(blockCase.defaultFilter);
+      expect(filterAction?.props?.filterValue).toEqual(blockCase.defaultFilter);
+      expect(filterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(blockCase.defaultFilter);
       expect(filterAction?.props?.filterableFieldNames).toBeUndefined();
       expect(filterAction?.stepParams?.filterSettings?.filterableFieldNames).toBeUndefined();
+    }
+  });
+
+  it('should keep addBlock block-level empty defaultFilter groups compatible for low-level runtime', async () => {
+    const page = await createPage(rootAgent, {
+      title: 'Empty block default filter addBlock page',
+      tabTitle: 'Empty block default filter addBlock tab',
+    });
+
+    for (const blockCase of [
+      { type: 'table', collectionName: 'users' },
+      { type: 'calendar', collectionName: 'calendar_events' },
+    ]) {
+      const addBlockRes = await rootAgent.resource('flowSurfaces').addBlock({
+        values: {
+          target: {
+            uid: page.tabSchemaUid,
+          },
+          type: blockCase.type,
+          resourceInit: {
+            dataSourceKey: 'main',
+            collectionName: blockCase.collectionName,
+          },
+          defaultFilter: {},
+        },
+      });
+      expect(addBlockRes.status).toBe(200);
+      const blockUid = getData(addBlockRes).uid;
+      const readback = await getSurface(rootAgent, {
+        uid: blockUid,
+      });
+      const filterAction = _.castArray(readback.tree.subModels?.actions || []).find(
+        (item: any) => item?.use === 'FilterActionModel',
+      );
+      expect(filterAction?.props?.defaultFilterValue).toEqual({
+        logic: '$and',
+        items: [],
+      });
+      expect(filterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual({
+        logic: '$and',
+        items: [],
+      });
     }
   });
 
@@ -1917,56 +2136,90 @@ describe('flowSurfaces resource', () => {
       title: 'Default filter precedence addBlock page',
       tabTitle: 'Default filter precedence addBlock tab',
     });
-    const blockDefaultFilter = {
-      logic: '$and',
-      items: [
-        {
-          path: 'username',
-          operator: '$includes',
-          value: 'staff',
-        },
-      ],
-    };
-    const settingsDefaultFilter = {
-      logic: '$and',
-      items: [
-        {
-          path: 'email',
-          operator: '$includes',
-          value: '@nocobase.com',
-        },
-      ],
-    };
-
-    const blockUid = await addBlock(
-      rootAgent,
-      page.tabSchemaUid,
-      'table',
+    for (const blockCase of [
       {
-        dataSourceKey: 'main',
+        type: 'table',
         collectionName: 'users',
+        filterableFieldNames: ['email'],
+        blockDefaultFilter: {
+          logic: '$and',
+          items: [
+            {
+              path: 'username',
+              operator: '$includes',
+              value: 'staff',
+            },
+          ],
+        },
+        settingsDefaultFilter: {
+          logic: '$and',
+          items: [
+            {
+              path: 'email',
+              operator: '$includes',
+              value: '@nocobase.com',
+            },
+          ],
+        },
       },
       {
-        defaultFilter: blockDefaultFilter,
-        defaultActionSettings: {
-          filter: {
-            filterableFieldNames: ['email'],
-            defaultFilter: settingsDefaultFilter,
+        type: 'calendar',
+        collectionName: 'calendar_events',
+        filterableFieldNames: ['status'],
+        blockDefaultFilter: {
+          logic: '$and',
+          items: [
+            {
+              path: 'title',
+              operator: '$includes',
+              value: 'planning',
+            },
+          ],
+        },
+        settingsDefaultFilter: {
+          logic: '$and',
+          items: [
+            {
+              path: 'status',
+              operator: '$eq',
+              value: 'confirmed',
+            },
+          ],
+        },
+      },
+    ]) {
+      const blockUid = await addBlock(
+        rootAgent,
+        page.tabSchemaUid,
+        blockCase.type,
+        {
+          dataSourceKey: 'main',
+          collectionName: blockCase.collectionName,
+        },
+        {
+          defaultFilter: blockCase.blockDefaultFilter,
+          defaultActionSettings: {
+            filter: {
+              filterableFieldNames: blockCase.filterableFieldNames,
+              defaultFilter: blockCase.settingsDefaultFilter,
+            },
           },
         },
-      },
-    );
+      );
 
-    const readback = await getSurface(rootAgent, {
-      uid: blockUid,
-    });
-    const filterAction = _.castArray(readback.tree.subModels?.actions || []).find(
-      (item: any) => item?.use === 'FilterActionModel',
-    );
-    expect(filterAction?.props?.filterableFieldNames).toEqual(['email']);
-    expect(filterAction?.props?.defaultFilterValue).toEqual(settingsDefaultFilter);
-    expect(filterAction?.props?.filterValue).toEqual(settingsDefaultFilter);
-    expect(filterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(settingsDefaultFilter);
+      const readback = await getSurface(rootAgent, {
+        uid: blockUid,
+      });
+      const filterAction = _.castArray(readback.tree.subModels?.actions || []).find(
+        (item: any) => item?.use === 'FilterActionModel',
+      );
+      expect(filterAction?.props?.filterableFieldNames).toEqual(blockCase.filterableFieldNames);
+      expect(filterAction?.props?.defaultFilterValue).toEqual(blockCase.settingsDefaultFilter);
+      expect(filterAction?.props?.filterValue).toEqual(blockCase.settingsDefaultFilter);
+      expect(filterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(
+        blockCase.settingsDefaultFilter,
+      );
+    }
   });
 
   it('should apply addBlocks item defaultActionSettings to auto-created filter actions', async () => {
@@ -2067,6 +2320,16 @@ describe('flowSurfaces resource', () => {
         },
       ],
     };
+    const calendarBlockDefaultFilter = {
+      logic: '$and',
+      items: [
+        {
+          path: 'title',
+          operator: '$includes',
+          value: 'planning',
+        },
+      ],
+    };
 
     const addBlocksRes = await rootAgent.resource('flowSurfaces').addBlocks({
       values: {
@@ -2098,6 +2361,90 @@ describe('flowSurfaces resource', () => {
               },
             },
           },
+          {
+            key: 'eventsCalendar',
+            type: 'calendar',
+            resourceInit: {
+              dataSourceKey: 'main',
+              collectionName: 'calendar_events',
+            },
+            defaultFilter: calendarBlockDefaultFilter,
+          },
+        ],
+      },
+    });
+    expect(addBlocksRes.status).toBe(200);
+    const addBlocksData = getData(addBlocksRes);
+    expect(addBlocksData.successCount).toBe(3);
+    expect(addBlocksData.errorCount).toBe(0);
+
+    const tableBlockUid = addBlocksData.blocks.find((item: any) => item.key === 'usersTable')?.result?.uid;
+    const listBlockUid = addBlocksData.blocks.find((item: any) => item.key === 'usersList')?.result?.uid;
+    const calendarBlockUid = addBlocksData.blocks.find((item: any) => item.key === 'eventsCalendar')?.result?.uid;
+    const tableReadback = await getSurface(rootAgent, {
+      uid: tableBlockUid,
+    });
+    const listReadback = await getSurface(rootAgent, {
+      uid: listBlockUid,
+    });
+    const calendarReadback = await getSurface(rootAgent, {
+      uid: calendarBlockUid,
+    });
+    const tableFilterAction = _.castArray(tableReadback.tree.subModels?.actions || []).find(
+      (item: any) => item?.use === 'FilterActionModel',
+    );
+    const listFilterAction = _.castArray(listReadback.tree.subModels?.actions || []).find(
+      (item: any) => item?.use === 'FilterActionModel',
+    );
+    const calendarFilterAction = _.castArray(calendarReadback.tree.subModels?.actions || []).find(
+      (item: any) => item?.use === 'FilterActionModel',
+    );
+    expect(tableFilterAction?.props?.defaultFilterValue).toEqual(blockDefaultFilter);
+    expect(tableFilterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(blockDefaultFilter);
+    expect(listFilterAction?.props?.filterableFieldNames).toEqual(['nickname']);
+    expect(listFilterAction?.props?.defaultFilterValue).toEqual(settingsDefaultFilter);
+    expect(listFilterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(settingsDefaultFilter);
+    expect(calendarFilterAction?.props?.defaultFilterValue).toEqual(calendarBlockDefaultFilter);
+    expect(calendarFilterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(
+      calendarBlockDefaultFilter,
+    );
+  });
+
+  it('should keep addBlocks block-level empty defaultFilter compatible for low-level runtime', async () => {
+    const page = await createPage(rootAgent, {
+      title: 'Empty block default filter addBlocks page',
+      tabTitle: 'Empty block default filter addBlocks tab',
+    });
+    const tabReadback = await getSurface(rootAgent, {
+      uid: page.tabSchemaUid,
+    });
+    const tabGridUid = tabReadback.tree?.subModels?.grid?.uid;
+    expect(tabGridUid).toBeTruthy();
+
+    const addBlocksRes = await rootAgent.resource('flowSurfaces').addBlocks({
+      values: {
+        target: {
+          uid: tabGridUid,
+        },
+        blocks: [
+          {
+            key: 'usersTable',
+            type: 'table',
+            resourceInit: {
+              dataSourceKey: 'main',
+              collectionName: 'users',
+            },
+            defaultFilter: {},
+          },
+          {
+            key: 'eventsCalendar',
+            type: 'calendar',
+            resourceInit: {
+              dataSourceKey: 'main',
+              collectionName: 'calendar_events',
+            },
+            defaultFilter: null,
+          },
         ],
       },
     });
@@ -2106,25 +2453,21 @@ describe('flowSurfaces resource', () => {
     expect(addBlocksData.successCount).toBe(2);
     expect(addBlocksData.errorCount).toBe(0);
 
-    const tableBlockUid = addBlocksData.blocks.find((item: any) => item.key === 'usersTable')?.result?.uid;
-    const listBlockUid = addBlocksData.blocks.find((item: any) => item.key === 'usersList')?.result?.uid;
-    const tableReadback = await getSurface(rootAgent, {
-      uid: tableBlockUid,
-    });
-    const listReadback = await getSurface(rootAgent, {
-      uid: listBlockUid,
-    });
-    const tableFilterAction = _.castArray(tableReadback.tree.subModels?.actions || []).find(
-      (item: any) => item?.use === 'FilterActionModel',
-    );
-    const listFilterAction = _.castArray(listReadback.tree.subModels?.actions || []).find(
-      (item: any) => item?.use === 'FilterActionModel',
-    );
-    expect(tableFilterAction?.props?.defaultFilterValue).toEqual(blockDefaultFilter);
-    expect(tableFilterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(blockDefaultFilter);
-    expect(listFilterAction?.props?.filterableFieldNames).toEqual(['nickname']);
-    expect(listFilterAction?.props?.defaultFilterValue).toEqual(settingsDefaultFilter);
-    expect(listFilterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(settingsDefaultFilter);
+    for (const key of ['usersTable', 'eventsCalendar']) {
+      const blockUid = addBlocksData.blocks.find((item: any) => item.key === key)?.result?.uid;
+      const readback = await getSurface(rootAgent, { uid: blockUid });
+      const filterAction = _.castArray(readback.tree.subModels?.actions || []).find(
+        (item: any) => item?.use === 'FilterActionModel',
+      );
+      expect(filterAction?.props?.defaultFilterValue).toEqual({
+        logic: '$and',
+        items: [],
+      });
+      expect(filterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual({
+        logic: '$and',
+        items: [],
+      });
+    }
   });
 
   it('should apply compose block-level defaultFilter and prefer explicit filter action settings', async () => {
@@ -2152,6 +2495,16 @@ describe('flowSurfaces resource', () => {
         },
       ],
     };
+    const calendarBlockDefaultFilter = {
+      logic: '$and',
+      items: [
+        {
+          path: 'title',
+          operator: '$includes',
+          value: 'planning',
+        },
+      ],
+    };
 
     const composeRes = await rootAgent.resource('flowSurfaces').compose({
       values: {
@@ -2176,7 +2529,7 @@ describe('flowSurfaces resource', () => {
               dataSourceKey: 'main',
               collectionName: 'users',
             },
-            defaultFilter: {},
+            defaultFilter: blockDefaultFilter,
             fields: ['username'],
           },
           {
@@ -2197,6 +2550,15 @@ describe('flowSurfaces resource', () => {
               },
             ],
           },
+          {
+            key: 'eventsCalendar',
+            type: 'calendar',
+            resource: {
+              dataSourceKey: 'main',
+              collectionName: 'calendar_events',
+            },
+            defaultFilter: calendarBlockDefaultFilter,
+          },
         ],
       },
     });
@@ -2205,10 +2567,12 @@ describe('flowSurfaces resource', () => {
     const tableBlockUid = composeData.blocks.find((item: any) => item.key === 'usersTable')?.uid;
     const listBlockUid = composeData.blocks.find((item: any) => item.key === 'usersList')?.uid;
     const cardsBlockUid = composeData.blocks.find((item: any) => item.key === 'usersCards')?.uid;
+    const calendarBlockUid = composeData.blocks.find((item: any) => item.key === 'eventsCalendar')?.uid;
 
     const tableReadback = await getSurface(rootAgent, { uid: tableBlockUid });
     const listReadback = await getSurface(rootAgent, { uid: listBlockUid });
     const cardsReadback = await getSurface(rootAgent, { uid: cardsBlockUid });
+    const calendarReadback = await getSurface(rootAgent, { uid: calendarBlockUid });
     const tableFilterAction = _.castArray(tableReadback.tree.subModels?.actions || []).find(
       (item: any) => item?.use === 'FilterActionModel',
     );
@@ -2218,18 +2582,73 @@ describe('flowSurfaces resource', () => {
     const cardsFilterAction = _.castArray(cardsReadback.tree.subModels?.actions || []).find(
       (item: any) => item?.use === 'FilterActionModel',
     );
+    const calendarFilterAction = _.castArray(calendarReadback.tree.subModels?.actions || []).find(
+      (item: any) => item?.use === 'FilterActionModel',
+    );
     expect(tableFilterAction?.props?.defaultFilterValue).toEqual(blockDefaultFilter);
     expect(tableFilterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(blockDefaultFilter);
-    expect(listFilterAction?.props?.defaultFilterValue).toEqual({
-      logic: '$and',
-      items: [],
-    });
-    expect(listFilterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual({
-      logic: '$and',
-      items: [],
-    });
+    expect(listFilterAction?.props?.defaultFilterValue).toEqual(blockDefaultFilter);
+    expect(listFilterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(blockDefaultFilter);
     expect(cardsFilterAction?.props?.defaultFilterValue).toEqual(explicitActionFilter);
     expect(cardsFilterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(explicitActionFilter);
+    expect(calendarFilterAction?.props?.defaultFilterValue).toEqual(calendarBlockDefaultFilter);
+    expect(calendarFilterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(
+      calendarBlockDefaultFilter,
+    );
+  });
+
+  it('should keep compose block-level empty defaultFilter compatible for low-level runtime', async () => {
+    const page = await createPage(rootAgent, {
+      title: 'Empty block default filter compose page',
+      tabTitle: 'Empty block default filter compose tab',
+    });
+
+    const composeRes = await rootAgent.resource('flowSurfaces').compose({
+      values: {
+        target: {
+          uid: page.tabSchemaUid,
+        },
+        blocks: [
+          {
+            key: 'usersTable',
+            type: 'table',
+            resource: {
+              dataSourceKey: 'main',
+              collectionName: 'users',
+            },
+            defaultFilter: {},
+          },
+          {
+            key: 'taskBoard',
+            type: 'kanban',
+            resource: {
+              dataSourceKey: 'main',
+              collectionName: 'kanban_tasks',
+            },
+            defaultFilter: null,
+            fields: ['title'],
+          },
+        ],
+      },
+    });
+    expect(composeRes.status, readErrorMessage(composeRes)).toBe(200);
+    const composeData = getData(composeRes);
+
+    for (const key of ['usersTable', 'taskBoard']) {
+      const blockUid = composeData.blocks.find((item: any) => item.key === key)?.uid;
+      const readback = await getSurface(rootAgent, { uid: blockUid });
+      const filterAction = _.castArray(readback.tree.subModels?.actions || []).find(
+        (item: any) => item?.use === 'FilterActionModel',
+      );
+      expect(filterAction?.props?.defaultFilterValue).toEqual({
+        logic: '$and',
+        items: [],
+      });
+      expect(filterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual({
+        logic: '$and',
+        items: [],
+      });
+    }
   });
 
   it('should auto-inject submit for form blocks created through addBlocks', async () => {
@@ -3858,7 +4277,7 @@ describe('flowSurfaces resource', () => {
     expect(readErrorMessage(invalidRes)).toContain('must reference an existing node');
   });
 
-  it('should configure roles table fields with displayStyle tag and switch fieldComponent via wrapper changes', async () => {
+  it('should configure roles table fields with displayStyle tag and switch fieldType via wrapper changes', async () => {
     const page = await createPage(rootAgent, {
       title: 'Users roles field configure page',
       tabTitle: 'Users roles field configure tab',
@@ -3895,7 +4314,8 @@ describe('flowSurfaces resource', () => {
           uid: rolesField.wrapperUid,
         },
         changes: {
-          fieldComponent: 'DisplaySubTableFieldModel',
+          fieldType: 'subTable',
+          fields: ['title', 'name'],
         },
       },
     });
@@ -3910,11 +4330,614 @@ describe('flowSurfaces resource', () => {
     expect(rolesWrapperAfterSwitch.tree.stepParams?.tableColumnSettings?.model?.use).toBe('DisplaySubTableFieldModel');
     expect(rolesInnerAfterSwitch.tree.use).toBe('DisplaySubTableFieldModel');
     expect(rolesInnerAfterSwitch.tree.stepParams?.fieldBinding?.use).toBe('DisplaySubTableFieldModel');
+    expect(
+      _.castArray(rolesInnerAfterSwitch.tree.subModels?.columns || []).map(
+        (item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath,
+      ),
+    ).toEqual(['roles.title', 'roles.name']);
+    expect(
+      _.castArray(rolesInnerAfterSwitch.tree.subModels?.columns || []).map(
+        (item: any) => item?.stepParams?.fieldSettings?.init?.collectionName,
+      ),
+    ).toEqual(['users', 'users']);
+    expect(
+      _.castArray(rolesInnerAfterSwitch.tree.subModels?.columns || []).map((item: any) => item?.props?.title),
+    ).toEqual(['{{t("Role name")}}', '{{t("Role UID")}}']);
+    expect(
+      _.castArray(rolesInnerAfterSwitch.tree.subModels?.columns || []).map(
+        (item: any) => item?.stepParams?.tableColumnSettings?.title?.title,
+      ),
+    ).toEqual(['{{t("Role name")}}', '{{t("Role UID")}}']);
     expect(rolesInnerAfterSwitch.tree.stepParams?.fieldSettings?.init).toMatchObject({
       dataSourceKey: 'main',
       collectionName: 'users',
       fieldPath: 'roles',
     });
+    const rolesWrapperCatalogAfterSwitch = getData(
+      await rootAgent.resource('flowSurfaces').catalog({
+        values: {
+          target: {
+            uid: rolesField.wrapperUid,
+          },
+        },
+      }),
+    );
+    expect(rolesWrapperCatalogAfterSwitch.node.relation.current.fields).toEqual(['title', 'name']);
+  });
+
+  it('should create and switch generic relation fields with fieldType semantics', async () => {
+    const page = await createPage(rootAgent, {
+      title: 'Generic relation fieldType page',
+      tabTitle: 'Generic relation fieldType tab',
+    });
+
+    const formUid = await addBlock(rootAgent, page.tabSchemaUid, 'createForm', {
+      dataSourceKey: 'main',
+      collectionName: 'users',
+    });
+
+    const rolesCatalog = getData(
+      await rootAgent.resource('flowSurfaces').catalog({
+        values: {
+          target: {
+            uid: formUid,
+          },
+        },
+      }),
+    ).fields.find((item: any) => item.key === 'roles');
+    expect(rolesCatalog.fieldUse).toBe('RecordSelectFieldModel');
+
+    const createdRolesField = getData(
+      await rootAgent.resource('flowSurfaces').addField({
+        values: {
+          target: {
+            uid: formUid,
+          },
+          fieldPath: 'roles',
+          fieldType: 'popupSubTable',
+          fields: ['title', 'name'],
+        },
+      }),
+    );
+    expect(createdRolesField.fieldUse).toBe('PopupSubTableFieldModel');
+
+    const createdRolesWrapperReadback = await getSurface(rootAgent, {
+      uid: createdRolesField.wrapperUid,
+    });
+    const createdRolesInnerReadback = await getSurface(rootAgent, {
+      uid: createdRolesField.fieldUid,
+    });
+    expect(createdRolesWrapperReadback.tree.stepParams?.editItemSettings?.model?.use).toBeUndefined();
+    expect(createdRolesInnerReadback.tree.use).toBe('PopupSubTableFieldModel');
+    expect(createdRolesInnerReadback.tree.subModels?.subTableColumns?.[0]?.use).toBe('PopupSubTableActionsColumnModel');
+    expect(
+      _.castArray(createdRolesInnerReadback.tree.subModels?.subTableColumns || [])
+        .filter((item: any) => item?.use === 'TableColumnModel')
+        .map((item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath),
+    ).toEqual(['roles.title', 'roles.name']);
+    expect(
+      _.castArray(createdRolesInnerReadback.tree.subModels?.subTableColumns || [])
+        .filter((item: any) => item?.use === 'TableColumnModel')
+        .map((item: any) => item?.stepParams?.fieldSettings?.init?.collectionName),
+    ).toEqual(['users', 'users']);
+    expect(
+      _.castArray(createdRolesInnerReadback.tree.subModels?.subTableColumns || [])
+        .filter((item: any) => item?.use === 'TableColumnModel')
+        .map((item: any) => item?.props?.title),
+    ).toEqual(['{{t("Role name")}}', '{{t("Role UID")}}']);
+    expect(
+      _.castArray(createdRolesInnerReadback.tree.subModels?.subTableColumns || [])
+        .filter((item: any) => item?.use === 'TableColumnModel')
+        .map((item: any) => item?.stepParams?.tableColumnSettings?.title?.title),
+    ).toEqual(['{{t("Role name")}}', '{{t("Role UID")}}']);
+    const createdRolesWrapperCatalog = getData(
+      await rootAgent.resource('flowSurfaces').catalog({
+        values: {
+          target: {
+            uid: createdRolesField.wrapperUid,
+          },
+        },
+      }),
+    );
+    expect(createdRolesWrapperCatalog.node.relation.current.fields).toEqual(['title', 'name']);
+    expect(
+      _.castArray(createdRolesInnerReadback.tree.subModels?.subTableColumns?.[0]?.subModels?.actions || []).map(
+        (item: any) => item.use,
+      ),
+    ).toEqual(['PopupSubTableEditActionModel', 'PopupSubTableRemoveActionModel']);
+    expect(
+      _.castArray(createdRolesInnerReadback.tree.subModels?.['grid-block']?.subModels?.items || []).map(
+        (item: any) => item?.use,
+      ),
+    ).toEqual(['TableSelectModel']);
+    const createdRolesNormalLoad = await flowRepo.findModelById(createdRolesField.fieldUid);
+    expect(createdRolesNormalLoad.subModels?.['grid-block']).toBeUndefined();
+    const createdRolesSelectorGrid = await flowRepo.findModelByParentId(createdRolesField.fieldUid, {
+      subKey: 'grid-block',
+    });
+    expect(createdRolesSelectorGrid?.use).toBe('BlockGridModel');
+    expect(_.castArray(createdRolesSelectorGrid?.subModels?.items || []).map((item: any) => item?.use)).toEqual([
+      'TableSelectModel',
+    ]);
+    expect(await getFlowModelSelfAsyncFlag(db, createdRolesSelectorGrid.uid)).toBe(true);
+
+    const addFieldsData = getData(
+      await rootAgent.resource('flowSurfaces').addFields({
+        values: {
+          target: {
+            uid: formUid,
+          },
+          fields: [
+            {
+              key: 'batchRolesField',
+              fieldPath: 'roles',
+              fieldType: 'popupSubTable',
+            },
+          ],
+        },
+      }),
+    );
+    expect(addFieldsData.successCount).toBe(1);
+    expect(addFieldsData.fields[0].ok).toBe(true);
+    expect(addFieldsData.fields[0].result.fieldUse).toBe('PopupSubTableFieldModel');
+    const batchRolesInnerReadback = await getSurface(rootAgent, {
+      uid: addFieldsData.fields[0].result.fieldUid,
+    });
+    expect(batchRolesInnerReadback.tree.use).toBe('PopupSubTableFieldModel');
+    expect(batchRolesInnerReadback.tree.subModels?.subTableColumns?.[0]?.use).toBe('PopupSubTableActionsColumnModel');
+
+    const defaultedSwitchField = await addField(rootAgent, formUid, 'roles');
+    const defaultedSwitchRes = await rootAgent.resource('flowSurfaces').configure({
+      values: {
+        target: {
+          uid: defaultedSwitchField.wrapperUid,
+        },
+        changes: {
+          fieldType: 'popupSubTable',
+        },
+      },
+    });
+    expect(defaultedSwitchRes.status).toBe(200);
+    const defaultedSwitchReadback = await getSurface(rootAgent, {
+      uid: defaultedSwitchField.fieldUid,
+    });
+    expect(
+      _.castArray(defaultedSwitchReadback.tree.subModels?.subTableColumns || [])
+        .filter((item: any) => item?.use === 'TableColumnModel')
+        .map((item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath),
+    ).toEqual(['roles.title']);
+    expect(
+      _.castArray(defaultedSwitchReadback.tree.subModels?.['grid-block']?.subModels?.items || []).map(
+        (item: any) => item?.use,
+      ),
+    ).toEqual(['TableSelectModel']);
+
+    const defaultRolesField = await addField(rootAgent, formUid, 'roles');
+    const switchRes = await rootAgent.resource('flowSurfaces').configure({
+      values: {
+        target: {
+          uid: defaultRolesField.wrapperUid,
+        },
+        changes: {
+          fieldType: 'popupSubTable',
+          fields: ['title'],
+        },
+      },
+    });
+    expect(switchRes.status).toBe(200);
+
+    const switchedRolesWrapper = await getSurface(rootAgent, {
+      uid: defaultRolesField.wrapperUid,
+    });
+    const switchedRolesInner = await getSurface(rootAgent, {
+      uid: defaultRolesField.fieldUid,
+    });
+    expect(switchedRolesWrapper.tree.stepParams?.editItemSettings?.model?.use).toBe('PopupSubTableFieldModel');
+    expect(switchedRolesInner.tree.stepParams?.fieldBinding?.use).toBe('PopupSubTableFieldModel');
+    expect(switchedRolesInner.tree.subModels?.subTableColumns?.[0]?.use).toBe('PopupSubTableActionsColumnModel');
+    expect(
+      _.castArray(switchedRolesInner.tree.subModels?.subTableColumns || [])
+        .filter((item: any) => item?.use === 'TableColumnModel')
+        .map((item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath),
+    ).toEqual(['roles.title']);
+    expect(
+      _.castArray(switchedRolesInner.tree.subModels?.['grid-block']?.subModels?.items || []).map(
+        (item: any) => item?.use,
+      ),
+    ).toEqual(['TableSelectModel']);
+
+    const configureInnerTitleFieldRes = await rootAgent.resource('flowSurfaces').configure({
+      values: {
+        target: {
+          uid: defaultRolesField.fieldUid,
+        },
+        changes: {
+          titleField: 'title',
+        },
+      },
+    });
+    expect(configureInnerTitleFieldRes.status).toBe(200);
+    const innerTitleFieldReadback = await getSurface(rootAgent, {
+      uid: defaultRolesField.fieldUid,
+    });
+    expect(innerTitleFieldReadback.tree.props?.titleField).toBe('title');
+
+    const customActionsColumn = innerTitleFieldReadback.tree.subModels?.subTableColumns?.[0];
+    expect(customActionsColumn?.use).toBe('PopupSubTableActionsColumnModel');
+    await flowRepo.patch({
+      uid: customActionsColumn.uid,
+      props: {
+        ...(customActionsColumn.props || {}),
+        reviewMarker: 'preserve-on-same-field-component',
+      },
+    });
+    const sameFieldComponentRes = await rootAgent.resource('flowSurfaces').configure({
+      values: {
+        target: {
+          uid: defaultRolesField.wrapperUid,
+        },
+        changes: {
+          fieldType: 'popupSubTable',
+        },
+      },
+    });
+    expect(sameFieldComponentRes.status).toBe(200);
+    const sameFieldComponentReadback = await getSurface(rootAgent, {
+      uid: defaultRolesField.fieldUid,
+    });
+    expect(sameFieldComponentReadback.tree.subModels?.subTableColumns?.[0]?.props?.reviewMarker).toBe(
+      'preserve-on-same-field-component',
+    );
+    expect(sameFieldComponentReadback.tree.stepParams?.fieldBinding?.use).toBe('PopupSubTableFieldModel');
+
+    const invalidScalarFieldRes = await rootAgent.resource('flowSurfaces').addField({
+      values: {
+        target: {
+          uid: formUid,
+        },
+        fieldPath: 'nickname',
+        fieldType: 'popupSubTable',
+      },
+    });
+    expect(invalidScalarFieldRes.status).toBe(400);
+    expect(readErrorMessage(invalidScalarFieldRes)).toContain(`fieldType is only supported for relation fields`);
+  });
+
+  it('should persist relation fieldType child paths like frontend nested field menus', async () => {
+    const page = await createPage(rootAgent, {
+      title: 'Relation fieldType nested child path page',
+      tabTitle: 'Relation fieldType nested child path tab',
+    });
+
+    const formUid = await addBlock(rootAgent, page.tabSchemaUid, 'createForm', {
+      dataSourceKey: 'main',
+      collectionName: 'employees',
+    });
+
+    const tasksField = await addField(rootAgent, formUid, 'tasks', {
+      fieldType: 'popupSubTable',
+      fields: ['employee.department.title'],
+    });
+    const tasksReadback = await getSurface(rootAgent, {
+      uid: tasksField.fieldUid,
+    });
+    const nestedColumnInit = _.castArray(tasksReadback.tree.subModels?.subTableColumns || []).find(
+      (item: any) => item?.use === 'TableColumnModel',
+    )?.stepParams?.fieldSettings?.init;
+    expect(nestedColumnInit).toMatchObject({
+      dataSourceKey: 'main',
+      collectionName: 'employees',
+      fieldPath: 'tasks.employee.department.title',
+      associationPathName: 'tasks.employee.department',
+    });
+
+    const tasksCatalog = getData(
+      await rootAgent.resource('flowSurfaces').catalog({
+        values: {
+          target: {
+            uid: tasksField.wrapperUid,
+          },
+        },
+      }),
+    );
+    expect(tasksCatalog.node.relation.current.fields).toEqual(['employee.department.title']);
+  });
+
+  it('should validate and configure relation fieldType options consistently', async () => {
+    const page = await createPage(rootAgent, {
+      title: 'Relation fieldType options page',
+      tabTitle: 'Relation fieldType options tab',
+    });
+
+    const formUid = await addBlock(rootAgent, page.tabSchemaUid, 'createForm', {
+      dataSourceKey: 'main',
+      collectionName: 'users',
+    });
+    const detailsUid = await addBlock(rootAgent, page.tabSchemaUid, 'details', {
+      dataSourceKey: 'main',
+      collectionName: 'users',
+    });
+    const employeeFormUid = await addBlock(rootAgent, page.tabSchemaUid, 'createForm', {
+      dataSourceKey: 'main',
+      collectionName: 'employees',
+    });
+    const employeeDetailsUid = await addBlock(rootAgent, page.tabSchemaUid, 'details', {
+      dataSourceKey: 'main',
+      collectionName: 'employees',
+    });
+
+    const pickerField = await addField(rootAgent, formUid, 'roles', {
+      fieldType: 'picker',
+      fields: ['title'],
+      openMode: 'drawer',
+      popupSize: 'medium',
+    });
+    let pickerReadback = await getSurface(rootAgent, {
+      uid: pickerField.fieldUid,
+    });
+    expect(pickerReadback.tree.use).toBe('RecordPickerFieldModel');
+    expect(pickerReadback.tree.stepParams?.popupSettings?.openView).toMatchObject({
+      mode: 'drawer',
+      size: 'medium',
+    });
+    expect(
+      _.castArray(pickerReadback.tree.subModels?.['grid-block']?.subModels?.items?.[0]?.subModels?.columns || []).map(
+        (item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath,
+      ),
+    ).toEqual(['title']);
+
+    const configurePickerOnlyRes = await rootAgent.resource('flowSurfaces').configure({
+      values: {
+        target: {
+          uid: pickerField.wrapperUid,
+        },
+        changes: {
+          openMode: 'modal',
+          popupSize: 'large',
+        },
+      },
+    });
+    expect(configurePickerOnlyRes.status).toBe(200);
+    pickerReadback = await getSurface(rootAgent, {
+      uid: pickerField.fieldUid,
+    });
+    expect(pickerReadback.tree.stepParams?.popupSettings?.openView).toMatchObject({
+      mode: 'modal',
+      size: 'large',
+    });
+
+    const clearPickerFieldsRes = await rootAgent.resource('flowSurfaces').configure({
+      values: {
+        target: {
+          uid: pickerField.wrapperUid,
+        },
+        changes: {
+          fields: [],
+        },
+      },
+    });
+    expect(clearPickerFieldsRes.status).toBe(200);
+    pickerReadback = await getSurface(rootAgent, {
+      uid: pickerField.fieldUid,
+    });
+    expect(
+      _.castArray(pickerReadback.tree.subModels?.['grid-block']?.subModels?.items?.[0]?.subModels?.columns || []).map(
+        (item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath,
+      ),
+    ).toEqual([]);
+
+    const customPickerField = await addField(rootAgent, employeeFormUid, 'department', {
+      fieldType: 'picker',
+      titleField: 'location',
+      fields: ['location'],
+    });
+    let customPickerReadback = await getSurface(rootAgent, {
+      uid: customPickerField.fieldUid,
+    });
+    expect(customPickerReadback.tree.props?.titleField).toBe('location');
+    const configureCustomPickerOnlyRes = await rootAgent.resource('flowSurfaces').configure({
+      values: {
+        target: {
+          uid: customPickerField.wrapperUid,
+        },
+        changes: {
+          openMode: 'drawer',
+        },
+      },
+    });
+    expect(configureCustomPickerOnlyRes.status).toBe(200);
+    customPickerReadback = await getSurface(rootAgent, {
+      uid: customPickerField.fieldUid,
+    });
+    expect(customPickerReadback.tree.props?.titleField).toBe('location');
+    expect(
+      _.castArray(
+        customPickerReadback.tree.subModels?.['grid-block']?.subModels?.items?.[0]?.subModels?.columns || [],
+      ).map((item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath),
+    ).toEqual(['location']);
+
+    const defaultPickerField = await addField(rootAgent, formUid, 'roles', {
+      fieldType: 'picker',
+    });
+    const defaultPickerReadback = await getSurface(rootAgent, {
+      uid: defaultPickerField.fieldUid,
+    });
+    expect(
+      _.castArray(
+        defaultPickerReadback.tree.subModels?.['grid-block']?.subModels?.items?.[0]?.subModels?.columns || [],
+      ).map((item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath),
+    ).toEqual(['title']);
+
+    const pickerWithNameFieldRes = await rootAgent.resource('flowSurfaces').addField({
+      values: {
+        target: {
+          uid: formUid,
+        },
+        fieldPath: 'roles',
+        fieldType: 'picker',
+        fields: ['title'],
+      },
+    });
+    expect(pickerWithNameFieldRes.status, readErrorMessage(pickerWithNameFieldRes)).toBe(200);
+    const pickerWithNameReadback = await getSurface(rootAgent, {
+      uid: pickerWithNameFieldRes.body?.data?.fieldUid,
+    });
+    expect(
+      _.castArray(
+        pickerWithNameReadback.tree.subModels?.['grid-block']?.subModels?.items?.[0]?.subModels?.columns || [],
+      ).map((item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath),
+    ).toEqual(['title']);
+
+    const configurePickerFieldsRes = await rootAgent.resource('flowSurfaces').configure({
+      values: {
+        target: {
+          uid: pickerWithNameFieldRes.body?.data?.wrapperUid,
+        },
+        changes: {
+          fields: ['name'],
+        },
+      },
+    });
+    expect(configurePickerFieldsRes.status, readErrorMessage(configurePickerFieldsRes)).toBe(200);
+    const configuredPickerReadback = await getSurface(rootAgent, {
+      uid: pickerWithNameFieldRes.body?.data?.fieldUid,
+    });
+    expect(
+      _.castArray(
+        configuredPickerReadback.tree.subModels?.['grid-block']?.subModels?.items?.[0]?.subModels?.columns || [],
+      ).map((item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath),
+    ).toEqual(['name']);
+
+    const subTableField = await addField(rootAgent, formUid, 'roles', {
+      fieldType: 'popupSubTable',
+      fields: ['title', 'name'],
+    });
+    const configureSubTableOnlyRes = await rootAgent.resource('flowSurfaces').configure({
+      values: {
+        target: {
+          uid: subTableField.wrapperUid,
+        },
+        changes: {
+          pageSize: 7,
+          showIndex: true,
+        },
+      },
+    });
+    expect(configureSubTableOnlyRes.status).toBe(200);
+    let subTableReadback = await getSurface(rootAgent, {
+      uid: subTableField.fieldUid,
+    });
+    expect(subTableReadback.tree.props).toMatchObject({
+      pageSize: 7,
+      showIndex: true,
+    });
+
+    const clearSubTableFieldsRes = await rootAgent.resource('flowSurfaces').configure({
+      values: {
+        target: {
+          uid: subTableField.wrapperUid,
+        },
+        changes: {
+          fields: [],
+        },
+      },
+    });
+    expect(clearSubTableFieldsRes.status).toBe(200);
+    subTableReadback = await getSurface(rootAgent, {
+      uid: subTableField.fieldUid,
+    });
+    expect(
+      _.castArray(subTableReadback.tree.subModels?.subTableColumns || []).filter(
+        (item: any) => item?.use === 'TableColumnModel',
+      ),
+    ).toEqual([]);
+
+    const textWithFieldsRes = await rootAgent.resource('flowSurfaces').addField({
+      values: {
+        target: {
+          uid: detailsUid,
+        },
+        fieldPath: 'roles',
+        fieldType: 'text',
+        fields: ['title'],
+      },
+    });
+    expect(textWithFieldsRes.status).toBe(400);
+    expect(readErrorMessage(textWithFieldsRes)).toContain(`fieldType 'text' does not support fields`);
+
+    const subFormField = await addField(rootAgent, employeeFormUid, 'department', {
+      fieldType: 'subForm',
+      titleField: 'title',
+      fields: ['location'],
+    });
+    const subFormReadback = await getSurface(rootAgent, {
+      uid: subFormField.fieldUid,
+    });
+    expect(subFormReadback.tree.use).toBe('SubFormFieldModel');
+    expect(
+      _.castArray(subFormReadback.tree.subModels?.grid?.subModels?.items || []).map(
+        (item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath,
+      ),
+    ).toEqual(['department.location']);
+
+    const detailsSubDetailsField = await addField(rootAgent, employeeDetailsUid, 'department', {
+      fieldType: 'subDetails',
+      titleField: 'title',
+      fields: ['location'],
+    });
+    const subDetailsReadback = await getSurface(rootAgent, {
+      uid: detailsSubDetailsField.fieldUid,
+    });
+    expect(subDetailsReadback.tree.use).toBe('DisplaySubItemFieldModel');
+    expect(
+      _.castArray(subDetailsReadback.tree.subModels?.grid?.subModels?.items || []).map(
+        (item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath,
+      ),
+    ).toEqual(['department.location']);
+
+    const detailsSubDetailsListField = await addField(rootAgent, detailsUid, 'roles', {
+      fieldType: 'subDetailsList',
+      fields: ['title'],
+    });
+    const subDetailsListReadback = await getSurface(rootAgent, {
+      uid: detailsSubDetailsListField.fieldUid,
+    });
+    expect(subDetailsListReadback.tree.use).toBe('DisplaySubListFieldModel');
+    expect(
+      _.castArray(subDetailsListReadback.tree.subModels?.grid?.subModels?.items || []).map(
+        (item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath,
+      ),
+    ).toEqual(['roles.title']);
+
+    const formSubFormListField = await addField(rootAgent, formUid, 'roles', {
+      fieldType: 'subFormList',
+      fields: ['title'],
+    });
+    const subFormListReadback = await getSurface(rootAgent, {
+      uid: formSubFormListField.fieldUid,
+    });
+    expect(subFormListReadback.tree.use).toBe('SubFormListFieldModel');
+    expect(
+      _.castArray(subFormListReadback.tree.subModels?.grid?.subModels?.items || []).map(
+        (item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath,
+      ),
+    ).toEqual(['roles.title']);
+
+    const detailsTextField = await addField(rootAgent, detailsUid, 'roles', {
+      fieldType: 'text',
+    });
+    const textReadback = await getSurface(rootAgent, {
+      uid: detailsTextField.fieldUid,
+    });
+    expect(textReadback.tree.use).toBe('DisplayTextFieldModel');
+
+    const selectField = await addField(rootAgent, formUid, 'roles', {
+      fieldType: 'select',
+    });
+    const selectReadback = await getSurface(rootAgent, {
+      uid: selectField.fieldUid,
+    });
+    expect(selectReadback.tree.use).toBe('RecordSelectFieldModel');
   });
 
   it('should reject invalid openView uid through updateSettings stepParams writes', async () => {
@@ -4091,7 +5114,7 @@ describe('flowSurfaces resource', () => {
     });
   });
 
-  it('should accept SelectFieldModel mode in field props writes and preserve checkboxGroup defaults', async () => {
+  it('should preserve checkboxGroup defaults with the dedicated checkbox-group field model', async () => {
     const collectionName = `select_field_mode_${Date.now()}`;
     const checkboxGroupFieldPath = 'preferenceTags';
     await rootAgent.resource('collections').create({
@@ -4135,31 +5158,25 @@ describe('flowSurfaces resource', () => {
     const initialReadback = await getSurface(rootAgent, {
       uid: checkboxGroupField.fieldUid,
     });
-    expect(initialReadback.tree.use).toBe('SelectFieldModel');
-    expect(initialReadback.tree.props).toMatchObject({
-      allowClear: true,
-      mode: 'tags',
-    });
+    expect(initialReadback.tree.use).toBe('CheckboxGroupFieldModel');
 
     const updateFieldMode = await rootAgent.resource('flowSurfaces').updateSettings({
       values: {
         target: {
-          uid: checkboxGroupField.fieldUid,
+          uid: checkboxGroupField.wrapperUid,
         },
         props: {
-          allowClear: false,
-          mode: 'tags',
+          disabled: true,
         },
       },
     });
     expect(updateFieldMode.status).toBe(200);
 
     const updatedReadback = await getSurface(rootAgent, {
-      uid: checkboxGroupField.fieldUid,
+      uid: checkboxGroupField.wrapperUid,
     });
     expect(updatedReadback.tree.props).toMatchObject({
-      allowClear: false,
-      mode: 'tags',
+      disabled: true,
     });
   });
 
@@ -5380,17 +6397,15 @@ describe('flowSurfaces resource', () => {
       fieldUse: 'InputFieldModel',
     });
 
-    const explicitFormField = await addField(rootAgent, createFormUid, 'nickname', {
-      fieldUse: formNicknameField.fieldUse,
-    });
-    expect(explicitFormField.fieldUse).toBe(formNicknameField.fieldUse);
+    const inferredFormField = await addField(rootAgent, createFormUid, 'nickname');
+    expect(inferredFormField.fieldUse).toBe(formNicknameField.fieldUse);
 
-    const explicitFormFieldReadback = await getSurface(rootAgent, {
-      uid: explicitFormField.fieldUid,
+    const inferredFormFieldReadback = await getSurface(rootAgent, {
+      uid: inferredFormField.fieldUid,
     });
-    expect(explicitFormFieldReadback.tree.use).toBe(formNicknameField.fieldUse);
+    expect(inferredFormFieldReadback.tree.use).toBe(formNicknameField.fieldUse);
 
-    const mismatchedFieldUseRes = await rootAgent.resource('flowSurfaces').addField({
+    const fieldUseRes = await rootAgent.resource('flowSurfaces').addField({
       values: {
         target: {
           uid: createFormUid,
@@ -5399,8 +6414,8 @@ describe('flowSurfaces resource', () => {
         fieldUse: tableNicknameField.fieldUse,
       },
     });
-    expect(mismatchedFieldUseRes.status).toBe(400);
-    expect(readErrorMessage(mismatchedFieldUseRes)).toContain(`does not match inferred fieldUse`);
+    expect(fieldUseRes.status).toBe(400);
+    expect(readErrorMessage(fieldUseRes)).toContain(`does not accept internal field keys: fieldUse`);
 
     const unknownFieldUseRes = await rootAgent.resource('flowSurfaces').addField({
       values: {
@@ -5412,11 +6427,10 @@ describe('flowSurfaces resource', () => {
       },
     });
     expect(unknownFieldUseRes.status).toBe(400);
-    expect(readErrorMessage(unknownFieldUseRes)).toContain(`is not allowed under`);
+    expect(readErrorMessage(unknownFieldUseRes)).toContain(`does not accept internal field keys: fieldUse`);
 
     const explicitFilterField = await addField(rootAgent, filterFormUid, 'nickname', {
       defaultTargetUid: tableUid,
-      fieldUse: filterNicknameField.fieldUse,
     });
     expect(explicitFilterField.fieldUse).toBe(filterNicknameField.fieldUse);
 
@@ -8902,6 +9916,17 @@ async function getSurface(rootAgent: any, target: Record<string, any>) {
   );
 }
 
+async function getFlowModelSelfAsyncFlag(db: Database, uid: string) {
+  const node = await db.getRepository('flowModelTreePath').findOne({
+    filter: {
+      ancestor: uid,
+      descendant: uid,
+      depth: 0,
+    },
+  });
+  return node?.get('async');
+}
+
 async function getBlockGridUid(rootAgent: any, blockUid: string) {
   const readback = await getSurface(rootAgent, {
     uid: blockUid,
@@ -9064,6 +10089,59 @@ async function setupFixtureCollections(rootAgent: any, db?: Database) {
     },
   });
 
+  await rootAgent.resource('collections').create({
+    values: {
+      name: 'calendar_events',
+      title: 'Calendar events',
+      createdAt: false,
+      updatedAt: false,
+      timestamps: false,
+      fields: [
+        { name: 'title', type: 'string', interface: 'input' },
+        { name: 'status', type: 'string', interface: 'select' },
+        { name: 'startsAt', type: 'date', interface: 'datetime' },
+        { name: 'endsAt', type: 'date', interface: 'datetime' },
+      ],
+    },
+  });
+
+  await rootAgent.resource('collections').create({
+    values: {
+      name: 'kanban_tasks',
+      title: 'Kanban tasks',
+      filterTargetKey: 'id',
+      fields: [
+        { name: 'title', type: 'string', interface: 'input' },
+        {
+          name: 'status_sort',
+          type: 'sort',
+          interface: 'sort',
+          scopeKey: 'status',
+          hidden: true,
+        },
+        {
+          name: 'department_sort',
+          type: 'sort',
+          interface: 'sort',
+          scopeKey: 'departmentId',
+          hidden: true,
+        },
+        {
+          name: 'status',
+          type: 'string',
+          interface: 'select',
+          uiSchema: {
+            enum: [
+              { value: 'todo', label: 'To do', color: 'blue' },
+              { value: 'doing', label: 'Doing', color: 'gold' },
+              { value: 'done', label: 'Done', color: 'green' },
+            ],
+          },
+        },
+      ],
+    },
+  });
+
   await rootAgent.resource('collections.fields', 'tasks').create({
     values: {
       name: 'employee',
@@ -9149,12 +10227,24 @@ async function setupFixtureCollections(rootAgent: any, db?: Database) {
     },
   });
 
+  await rootAgent.resource('collections.fields', 'kanban_tasks').create({
+    values: {
+      name: 'department',
+      type: 'belongsTo',
+      target: 'departments',
+      foreignKey: 'departmentId',
+      interface: 'm2o',
+    },
+  });
+
   if (db) {
     await waitForFixtureCollectionsReady(db, {
       categories: ['title', 'parentId'],
       departments: ['title', 'location'],
       employees: ['nickname', 'status', 'age', 'bio', 'isManager', 'departmentId'],
       tasks: ['title', 'status', 'employeeId'],
+      calendar_events: ['title', 'status', 'startsAt', 'endsAt'],
+      kanban_tasks: ['title', 'status', 'status_sort', 'departmentId', 'department_sort'],
       employee_logs: ['content', 'employeeId'],
       skills: ['label'],
       employee_skills: ['id', 'employeeId', 'skillId'],
@@ -9184,6 +10274,14 @@ async function setupFixtureCollections(rootAgent: any, db?: Database) {
       title: 'Prepare report',
       status: 'todo',
       employeeId,
+    },
+  });
+
+  await rootAgent.resource('kanban_tasks').create({
+    values: {
+      title: 'Plan release',
+      status: 'todo',
+      departmentId,
     },
   });
 

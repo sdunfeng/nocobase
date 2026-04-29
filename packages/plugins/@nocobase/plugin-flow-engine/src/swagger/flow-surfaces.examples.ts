@@ -277,6 +277,53 @@ export const flowSurfaceExamples = {
       },
     ],
   },
+  applyBlueprintCalendar: {
+    version: '1',
+    mode: 'create',
+    navigation: {
+      item: {
+        title: 'Calendar',
+      },
+    },
+    page: {
+      title: 'Calendar',
+      documentTitle: 'Team calendar',
+    },
+    tabs: [
+      {
+        key: 'schedule',
+        title: 'Schedule',
+        blocks: [
+          {
+            key: 'eventsCalendar',
+            type: 'calendar',
+            collection: 'calendar_events',
+            defaultFilter: makePublicBlockDefaultFilter([
+              {
+                path: 'title',
+                operator: '$includes',
+                value: '',
+              },
+              {
+                path: 'status',
+                operator: '$eq',
+                value: 'planned',
+              },
+            ]),
+            settings: {
+              title: 'Team events',
+              titleField: 'title',
+              colorField: 'status',
+              startField: 'startsAt',
+              endField: 'endsAt',
+              defaultView: 'week',
+            },
+            actions: ['filter', 'addNew', 'refresh', 'today', 'turnPages', 'title', 'selectView'],
+          },
+        ],
+      },
+    ],
+  },
   applyApprovalBlueprintInitiator: {
     version: '1',
     surface: 'initiator',
@@ -1441,17 +1488,29 @@ export const flowSurfaceExamples = {
         },
       },
       {
-        key: 'teamNotes',
-        type: 'markdown',
-        settings: {
-          content: '# Team notes',
+        key: 'userForm',
+        type: 'createForm',
+        resourceInit: {
+          dataSourceKey: 'main',
+          collectionName: 'users',
+        },
+        fields: [
+          {
+            key: 'rolesField',
+            fieldPath: 'roles',
+            fieldType: 'popupSubTable',
+            fields: ['title', 'name'],
+          },
+        ],
+        fieldsLayout: {
+          rows: [['rolesField']],
         },
       },
     ],
   },
   addFields: {
     target: {
-      uid: 'table-block-uid',
+      uid: 'create-form-block-uid',
     },
     fields: [
       {
@@ -1476,13 +1535,12 @@ export const flowSurfaceExamples = {
         },
       },
       {
-        key: 'nickname',
-        fieldPath: 'nickname',
-        renderer: 'js',
+        key: 'rolesField',
+        fieldPath: 'roles',
+        fieldType: 'popupSubTable',
+        fields: ['title', 'name'],
         settings: {
-          label: 'Nickname (JS)',
-          code: 'return value;',
-          version: '1.0.0',
+          title: 'Roles',
         },
       },
     ],

@@ -30,9 +30,11 @@ const FILTER_GROUP_EXAMPLE = {
   items: [],
 };
 const PUBLIC_DATA_SURFACE_BLOCK_DEFAULT_FILTER_DESCRIPTION =
-  'Supported only on direct `table`, `list`, or `gridCard` blocks. Backfills the default `filter` action `settings.defaultFilter` when that action exists or is auto-created. If the filter action already provides `settings.defaultFilter`, the action-level value wins.';
+  'Supported only on direct `table`, `list`, `gridCard`, `calendar`, or `kanban` blocks. The backend runtime keeps this input optional and compatibility-tolerant: omitted, `{}`, `null`, or `{ logic: "$and", items: [] }` normalize to the empty filter group. When a non-empty value is provided, it backfills the default `filter` action `settings.defaultFilter` when that action exists or is auto-created. If the filter action already provides `settings.defaultFilter`, the action-level value wins.';
+const APPLY_BLUEPRINT_DATA_SURFACE_BLOCK_DEFAULT_FILTER_DESCRIPTION =
+  'Supported only on direct `table`, `list`, `gridCard`, `calendar`, or `kanban` blocks, and must contain at least one concrete filter item. Backfills the default `filter` action `settings.defaultFilter` when that action exists or is auto-created. If the filter action already provides `settings.defaultFilter`, the action-level value wins.';
 const DIRECT_ADD_DEFAULT_FILTER_COMPAT_DESCRIPTION =
-  'Public block-level `defaultFilter` is supported on direct `table` / `list` / `gridCard` creates. Legacy `defaultActionSettings.filter.defaultFilter` remains supported for compatibility and wins when both are provided.';
+  'Public block-level `defaultFilter` is supported on direct `table` / `list` / `gridCard` / `calendar` / `kanban` creates. Backend runtime compatibility is preserved: omitted or empty values remain accepted and normalize to the empty filter group. Legacy `defaultActionSettings.filter.defaultFilter` remains supported for compatibility and wins when both are provided.';
 const STRING_OR_INTEGER_SCHEMA = {
   oneOf: [{ type: 'string' }, { type: 'integer' }],
 };
@@ -107,6 +109,8 @@ const RECORD_ACTION_TYPE_ENUM = [
 ];
 const APPLY_BLUEPRINT_BLOCK_TYPE_ENUM = [
   'table',
+  'calendar',
+  'kanban',
   'createForm',
   'editForm',
   'details',
@@ -118,9 +122,32 @@ const APPLY_BLUEPRINT_BLOCK_TYPE_ENUM = [
   'chart',
   'actionPanel',
   'jsBlock',
+  'tree',
 ];
 const APPROVAL_BLUEPRINT_BLOCK_TYPE_ENUM = [...APPROVAL_BLOCK_PUBLIC_KEYS];
 const COMPOSE_BLOCK_TYPE_ENUM = [...APPLY_BLUEPRINT_BLOCK_TYPE_ENUM, ...APPROVAL_BLOCK_PUBLIC_KEYS];
+const RELATION_FIELD_TYPE_ENUM = [
+  'text',
+  'select',
+  'picker',
+  'subForm',
+  'subFormList',
+  'subDetails',
+  'subDetailsList',
+  'subTable',
+  'popupSubTable',
+];
+const RELATION_FIELD_TYPE_SCHEMA = {
+  type: 'string',
+  enum: RELATION_FIELD_TYPE_ENUM,
+  description: 'Public relation field UI presentation type. This is not the collection field data type/interface.',
+};
+const RELATION_TARGET_FIELDS_SCHEMA = {
+  type: 'array',
+  items: { type: 'string' },
+  description:
+    'Relation target record fields. For picker fields, these become selector table columns; for nested relation fields, these become sub-table columns or embedded sub-form/detail fields.',
+};
 const ADD_CHILD_TREE_TABLE_NOTE =
   '`addChild` is only valid when the live target `catalog.recordActions` exposes it, which normally means a table bound to a tree collection with `treeTable` enabled.';
 const APPLY_BLUEPRINT_ADD_CHILD_NOTE =
@@ -489,7 +516,7 @@ const actionDocs: Record<string, any> = {
     tags: [FLOW_SURFACES_TAG],
     summary: 'Apply a page blueprint to create or replace one Modern page',
     description: valuesCompatibilityNote(
-      'Accepts one simplified JSON page blueprint and compiles it to internal flow-surface operations. The public blueprint describes page structure (`create` or `replace`, page metadata, ordered tabs, blocks, fields, actions, inline popups, optional reusable assets) and optional top-level `reaction.items[]` for whole-page interaction authoring. Each reaction item targets an explicit local key / bind key produced by the same blueprint run. Only explicitly listed reaction items are written. `rules: []` clears the targeted slot. Repeating the same `(type, target)` reaction slot in one blueprint is invalid. In `replace`, reaction targets always bind to the newly produced blueprint result, not historical nodes from the previous page version; if a slot must exist in the resulting surface, include it explicitly instead of relying on omission. Localized reaction edits on an existing surface should use `getReactionMeta` + `set*Rules` instead of applying a whole page blueprint again. The request body is that page-document JSON object itself and must not be JSON-stringified. Wrong: `{ "requestBody": "{\\"version\\":\\"1\\"}" }`. Internal planning details stay hidden. In `create`, `navigation.group.routeId` is the preferred way to target an existing menu group. It is exact-targeting only and cannot be mixed with existing-group metadata such as `icon`, `tooltip`, or `hideInMenu`; applyBlueprint create mode does not mutate existing group metadata, so callers should use `updateMenu` separately when that is required. When only `navigation.group.title` is provided, applyBlueprint reuses one existing same-title group when it is unique, creates a new group when none exists, and rejects ambiguous multi-match cases. Same-title reuse is title-only; if an existing group\'s metadata must change, use low-level `updateMenu` instead of applyBlueprint create. `replace` uses `target.pageSchemaUid`, updates only the explicit page-level fields provided in `page`, maps blueprint tabs to existing route-backed tab slots by index, rewrites each slot in order, removes trailing old tabs, and appends extra new tabs when needed. Tab and block keys are optional in the public blueprint; omit them unless custom layout or cross-block targeting needs a stable in-document identifier. `layout` is only allowed on tabs and inline popup documents; blocks themselves do not accept a `layout` property. Public applyBlueprint blocks do not support generic `form`; use `editForm` or `createForm`. Direct `table` / `list` / `gridCard` blocks may also provide block-level `defaultFilter`, which backfills the default `filter` action `settings.defaultFilter`; explicit filter-action `settings.defaultFilter` still wins. Inline popup documents may set `popup.tryTemplate=true` to ask the backend for the best compatible popup template before falling back to local popup content. Inline popup documents may also combine `popup.tryTemplate` with `popup.saveAsTemplate={ name, description, local? }`: a hit binds the matched template immediately and lets later inline popups in the same blueprint reuse that final bound template through `popup.template={ local, mode }`, while a miss requires explicit local `popup.blocks` so the fallback popup can be saved and reused. Custom `edit` popups that provide `popup.blocks` must include exactly one `editForm` block; that `editForm` may omit `resource` and then inherits the opener\'s current-record context. When layout is omitted, applyBlueprint auto-generates a simple top-to-bottom layout. When a `replace` run expands a page to multiple tabs while the current page still has `enableTabs=false`, callers must set `page.enableTabs=true` explicitly. The response hides execution internals and returns only the resolved page target and final surface readback.',
+      'Accepts one simplified JSON page blueprint and compiles it to internal flow-surface operations. The public blueprint describes page structure (`create` or `replace`, page metadata, ordered tabs, blocks, fields, actions, inline popups, optional reusable assets) and optional top-level `reaction.items[]` for whole-page interaction authoring. Each reaction item targets an explicit local key / bind key produced by the same blueprint run. Only explicitly listed reaction items are written. `rules: []` clears the targeted slot. Repeating the same `(type, target)` reaction slot in one blueprint is invalid. In `replace`, reaction targets always bind to the newly produced blueprint result, not historical nodes from the previous page version; if a slot must exist in the resulting surface, include it explicitly instead of relying on omission. Localized reaction edits on an existing surface should use `getReactionMeta` + `set*Rules` instead of applying a whole page blueprint again. The request body is that page-document JSON object itself and must not be JSON-stringified. Wrong: `{ "requestBody": "{\\"version\\":\\"1\\"}" }`. Internal planning details stay hidden. In `create`, `navigation.group.routeId` is the preferred way to target an existing menu group. It is exact-targeting only and cannot be mixed with existing-group metadata such as `icon`, `tooltip`, or `hideInMenu`; applyBlueprint create mode does not mutate existing group metadata, so callers should use `updateMenu` separately when that is required. When only `navigation.group.title` is provided, applyBlueprint reuses one existing same-title group when it is unique, creates a new group when none exists, and rejects ambiguous multi-match cases. Same-title reuse is title-only; if an existing group\'s metadata must change, use low-level `updateMenu` instead of applyBlueprint create. `replace` uses `target.pageSchemaUid`, updates only the explicit page-level fields provided in `page`, maps blueprint tabs to existing route-backed tab slots by index, rewrites each slot in order, removes trailing old tabs, and appends extra new tabs when needed. Tab and block keys are optional in the public blueprint; omit them unless custom layout or cross-block targeting needs a stable in-document identifier. `layout` is only allowed on tabs and inline popup documents; blocks themselves do not accept a `layout` property. Public applyBlueprint blocks do not support generic `form`; use `editForm` or `createForm`. Direct `table` / `list` / `gridCard` / `calendar` / `kanban` blocks may also provide non-empty block-level `defaultFilter`, which backfills the default `filter` action `settings.defaultFilter`; explicit filter-action `settings.defaultFilter` still wins. Inline popup documents may set `popup.tryTemplate=true` to ask the backend for the best compatible popup template before falling back to local popup content. Inline popup documents may also combine `popup.tryTemplate` with `popup.saveAsTemplate={ name, description, local? }`: a hit binds the matched template immediately and lets later inline popups in the same blueprint reuse that final bound template through `popup.template={ local, mode }`, while a miss requires explicit local `popup.blocks` so the fallback popup can be saved and reused. Custom `edit` popups that provide `popup.blocks` must include exactly one `editForm` block; that `editForm` may omit `resource` and then inherits the opener\'s current-record context. When layout is omitted, applyBlueprint auto-generates a simple top-to-bottom layout. When a `replace` run expands a page to multiple tabs while the current page still has `enableTabs=false`, callers must set `page.enableTabs=true` explicitly. The response hides execution internals and returns only the resolved page target and final surface readback.',
     ),
     requestBody: {
       required: true,
@@ -506,6 +533,10 @@ const actionDocs: Record<string, any> = {
             replacePage: {
               summary: 'Replace one existing Modern page by pageSchemaUid',
               value: examples.applyBlueprintReplace,
+            },
+            calendarPage: {
+              summary: 'Create a direct calendar block with block-level defaultFilter',
+              value: examples.applyBlueprintCalendar,
             },
           },
         },
@@ -548,7 +579,7 @@ const actionDocs: Record<string, any> = {
     tags: [FLOW_SURFACES_TAG],
     summary: 'Compose blocks, fields, actions and simple layout under an existing surface',
     description: valuesCompatibilityNote(
-      'Organizes content under an existing page/tab/grid/popup using the public block/action/field semantics as a low-level building primitive. The caller does not need to pass raw `use`, `fieldUse`, or `stepParams`. Blocks, fields, and actions can declare stable `key` values, and the compose result returns the same keys so later orchestration can reference nested popup or form nodes deterministically. Direct `table` / `list` / `gridCard` blocks may provide block-level `defaultFilter`, which backfills the default `filter` action `settings.defaultFilter`; explicit filter-action `settings.defaultFilter` still wins. Blocks may be created from `template`, and form templates can set `template.usage="fields"` to import only their grid fields. Popup-capable actions and fields may reuse `popup.template`, set `popup.tryTemplate=true` to ask the backend for one compatible popup template before falling back to local/default popup behavior, or combine `popup.tryTemplate` with `popup.saveAsTemplate={ name, description, local? }`: a hit binds the matched template immediately and lets later popup-capable fields/actions in the same compose call reuse that final bound template through `popup.template={ local, mode }`, while a miss requires explicit local `popup.blocks` so the fallback popup can be saved and reused. For collection blocks under a popup, check `catalog.blocks[].resourceBindings` first. The `select / subForm / bulkEditForm` scene is currently recognized only, and popup collection block creation is not supported in that scene. For approval surfaces, use `applyApprovalBlueprint` first to bootstrap or replace the bound approval root; use `compose` only after that root already exists.',
+      'Organizes content under an existing page/tab/grid/popup using the public block/action/field semantics as a low-level building primitive. The caller does not need to pass raw `use`, `fieldUse`, or `stepParams`. Blocks, fields, and actions can declare stable `key` values, and the compose result returns the same keys so later orchestration can reference nested popup or form nodes deterministically. Direct `table` / `list` / `gridCard` / `calendar` / `kanban` blocks may provide block-level `defaultFilter`; backend runtime compatibility remains compatibility-tolerant for omitted or empty values, and any provided value backfills the default `filter` action `settings.defaultFilter`. Explicit filter-action `settings.defaultFilter` still wins. Blocks may be created from `template`, and form templates can set `template.usage="fields"` to import only their grid fields. Popup-capable actions and fields may reuse `popup.template`, set `popup.tryTemplate=true` to ask the backend for one compatible popup template before falling back to local/default popup behavior, or combine `popup.tryTemplate` with `popup.saveAsTemplate={ name, description, local? }`: a hit binds the matched template immediately and lets later popup-capable fields/actions in the same compose call reuse that final bound template through `popup.template={ local, mode }`, while a miss requires explicit local `popup.blocks` so the fallback popup can be saved and reused. For collection blocks under a popup, check `catalog.blocks[].resourceBindings` first. The `select / subForm / bulkEditForm` scene is currently recognized only, and popup collection block creation is not supported in that scene. For approval surfaces, use `applyApprovalBlueprint` first to bootstrap or replace the bound approval root; use `compose` only after that root already exists.',
     ),
     requestBody: {
       required: true,
@@ -789,7 +820,7 @@ const actionDocs: Record<string, any> = {
     tags: [FLOW_SURFACES_TAG],
     summary: 'Add a block under a surface or grid container',
     description: valuesCompatibilityNote(
-      'Creates a block by catalog key or an explicitly supported block use. It can also create from `template`, using `mode="reference"` or `mode="copy"`. Form templates may set `template.usage="fields"` to create a fresh host block and import only its grid fields. Popup-capable host nodes automatically receive the popup shell. For collection blocks under a popup, check `catalog.blocks[].resourceBindings` first, then pass the semantic `resource.binding`. The lower-level `resourceInit` is still accepted for compatibility, but the server validates it against popup semantics. `resource` and `resourceInit` are mutually exclusive. Direct `table` / `list` / `gridCard` creation may also provide block-level `defaultFilter`, which backfills the auto-created default filter action. Legacy `defaultActionSettings.filter.defaultFilter` is still supported for compatibility and wins when both are provided. The `select / subForm / bulkEditForm` scene is currently recognized only, and popup collection block creation is not supported in that scene. Direct add does not accept raw `props` / `decoratorProps` / `stepParams` / `flowRegistry`. Use `settings` and reuse the public configuration semantics from `configure.changes` plus the catalog item/node `configureOptions`. Approval block keys are only exposed under approval grids and do not auto-create an approval root; bootstrap approval surfaces with `applyApprovalBlueprint` first.',
+      'Creates a block by catalog key or an explicitly supported block use. It can also create from `template`, using `mode="reference"` or `mode="copy"`. Form templates may set `template.usage="fields"` to create a fresh host block and import only its grid fields. Popup-capable host nodes automatically receive the popup shell. For collection blocks under a popup, check `catalog.blocks[].resourceBindings` first, then pass the semantic `resource.binding`. The lower-level `resourceInit` is still accepted for compatibility, but the server validates it against popup semantics. `resource` and `resourceInit` are mutually exclusive. Direct `table` / `list` / `gridCard` / `calendar` / `kanban` creation may also provide block-level `defaultFilter`; backend runtime compatibility remains tolerant of omitted or empty values, and any provided value backfills the auto-created default filter action. Legacy `defaultActionSettings.filter.defaultFilter` is still supported for compatibility and wins when both are provided. The `select / subForm / bulkEditForm` scene is currently recognized only, and popup collection block creation is not supported in that scene. Direct add does not accept raw `props` / `decoratorProps` / `stepParams` / `flowRegistry`. Use `settings` and reuse the public configuration semantics from `configure.changes` plus the catalog item/node `configureOptions`. Approval block keys are only exposed under approval grids and do not auto-create an approval root; bootstrap approval surfaces with `applyApprovalBlueprint` first.',
     ),
     requestBody: {
       required: true,
@@ -827,7 +858,7 @@ const actionDocs: Record<string, any> = {
     tags: [FLOW_SURFACES_TAG],
     summary: 'Add a field wrapper and inner field under a field container',
     description: valuesCompatibilityNote(
-      'Automatically derives the wrapper/inner-field combination from the container use and the field interface. It can also import a form template through `template`, using `reference` or `copy` mode for the target form grid. `fieldUse` is only kept as a compatibility check and is no longer an arbitrary creation entry. Direct add does not accept raw `wrapperProps` / `fieldProps` / `props` / `decoratorProps` / `stepParams` / `flowRegistry`. Use `settings` and reuse the public configuration semantics from `configure.changes` plus the catalog item/node `configureOptions`. Popup-capable fields can also pass `popup` directly to append a local popup subtree or `popup.template` to reuse a saved popup template in `reference` / `copy` mode. `popup.tryTemplate=true` asks the backend to auto-select a compatible popup template first, preferring the same relation when one exists and otherwise falling back to a compatible non-relation template. It may be combined with `popup.saveAsTemplate={ name, description }`: a hit reuses the matched template directly, while a miss requires explicit local `popup.blocks` so the fallback popup can be saved as a template reference. When `popup.template` is present, `popup.title` still applies, while local `popup.mode` / `popup.blocks` / `popup.layout` are accepted but ignored. If local openView is enabled but no popup content is provided, the server fills in the popup page/tab/grid shell automatically. Under approval forms, direct field creation preserves the `PatternFormFieldModel` inner node semantics and does not allow standalone `jsItem`.',
+      'Automatically derives the wrapper/inner-field combination from the container use and the field interface. Relation fields can request a public `fieldType` such as `picker`, `subTable`, or `popupSubTable`, with optional flat `fields` and `titleField`. For picker fields, `fields` configures selector table columns; for nested relation fields, `fields` configures nested fields/columns. Direct add does not accept raw `wrapperProps` / `fieldProps` / `props` / `decoratorProps` / `stepParams` / `flowRegistry` or internal field model keys. Use `settings` and reuse the public configuration semantics from `configure.changes` plus the catalog item/node `configureOptions`. Popup-capable fields can also pass `popup` directly to append a local popup subtree or `popup.template` to reuse a saved popup template in `reference` / `copy` mode. `popup.tryTemplate=true` asks the backend to auto-select a compatible popup template first, preferring the same relation when one exists and otherwise falling back to a compatible non-relation template. It may be combined with `popup.saveAsTemplate={ name, description }`: a hit reuses the matched template directly, while a miss requires explicit local `popup.blocks` so the fallback popup can be saved as a template reference. When `popup.template` is present, `popup.title` still applies, while local `popup.mode` / `popup.blocks` / `popup.layout` are accepted but ignored. If local openView is enabled but no popup content is provided, the server fills in the popup page/tab/grid shell automatically. Under approval forms, direct field creation preserves the `PatternFormFieldModel` inner node semantics and does not allow standalone `jsItem`.',
     ),
     requestBody: {
       required: true,
@@ -961,7 +992,7 @@ const actionDocs: Record<string, any> = {
     tags: [FLOW_SURFACES_TAG],
     summary: 'Add multiple blocks sequentially under the same target',
     description: valuesCompatibilityNote(
-      'Creates multiple blocks sequentially under the same target. Each item may include `settings`, `defaultFilter`, `defaultActionSettings`, or `template`, but raw `props` / `decoratorProps` / `stepParams` / `flowRegistry` are not accepted. Direct `table` / `list` / `gridCard` items may use block-level `defaultFilter` to backfill the auto-created default filter action. Legacy `defaultActionSettings.filter.defaultFilter` is still supported for compatibility and wins when both are provided. Partial-success semantics apply: a failure in one item does not roll back the others. Results are returned in input order as `index/key/ok/result/error`, and each `error` always includes `message/type/code/status`.',
+      'Creates multiple blocks sequentially under the same target. Each item may include `settings`, `defaultFilter`, `defaultActionSettings`, `template`, or inline `fields` / `fieldsLayout`, but raw `props` / `decoratorProps` / `stepParams` / `flowRegistry` are not accepted. Inline fields use the same public field semantics as compose/addField, including relation `fieldType`. Direct `table` / `list` / `gridCard` / `calendar` / `kanban` items may use block-level `defaultFilter` to backfill the auto-created default filter action; backend runtime compatibility remains tolerant of omitted or empty values. Legacy `defaultActionSettings.filter.defaultFilter` is still supported for compatibility and wins when both are provided. Partial-success semantics apply: a failure in one item does not roll back the others. Results are returned in input order as `index/key/ok/result/error`, and each `error` always includes `message/type/code/status`.',
     ),
     requestBody: requestBody('FlowSurfaceAddBlocksRequest', examples.addBlocks),
     responses: responses('FlowSurfaceAddBlocksResult'),
@@ -2151,6 +2182,13 @@ const schemas = {
           fieldPath: {
             type: 'string',
           },
+          fieldType: RELATION_FIELD_TYPE_SCHEMA,
+          fields: RELATION_TARGET_FIELDS_SCHEMA,
+          titleField: { type: 'string' },
+          openMode: { type: 'string', example: 'drawer' },
+          popupSize: { type: 'string', example: 'medium' },
+          pageSize: { type: 'number', example: 10 },
+          showIndex: { type: 'boolean', example: true },
           renderer: {
             type: 'string',
             enum: ['js'],
@@ -2469,7 +2507,8 @@ const schemas = {
       },
       actions: {
         type: 'array',
-        description: 'Block-level actions. For table/list/gridCard, prefer block-wide collection actions here.',
+        description:
+          'Block-level actions. For table/list/gridCard/calendar/kanban, prefer block-wide collection actions here.',
         items: ref('FlowSurfaceComposeActionSpec'),
       },
       recordActions: {
@@ -3434,6 +3473,13 @@ const schemas = {
           associationPathName: { type: 'string' },
           renderer: { type: 'string' },
           type: { type: 'string' },
+          fieldType: RELATION_FIELD_TYPE_SCHEMA,
+          fields: RELATION_TARGET_FIELDS_SCHEMA,
+          titleField: { type: 'string' },
+          openMode: { type: 'string', example: 'drawer' },
+          popupSize: { type: 'string', example: 'medium' },
+          pageSize: { type: 'number', example: 10 },
+          showIndex: { type: 'boolean', example: true },
           label: { type: 'string' },
           target: {
             type: 'string',
@@ -3539,7 +3585,7 @@ const schemas = {
       settings: ANY_OBJECT_SCHEMA,
       defaultFilter: {
         allOf: [ref('FlowSurfaceFilterGroup')],
-        description: PUBLIC_DATA_SURFACE_BLOCK_DEFAULT_FILTER_DESCRIPTION,
+        description: APPLY_BLUEPRINT_DATA_SURFACE_BLOCK_DEFAULT_FILTER_DESCRIPTION,
       },
       fields: {
         type: 'array',
@@ -4352,6 +4398,11 @@ const schemas = {
       template: ref('FlowSurfaceBlockTemplateRef'),
       resource: ref('FlowSurfaceBlockResourceInput'),
       resourceInit: ref('FlowSurfaceResourceInit'),
+      fields: {
+        type: 'array',
+        items: ref('FlowSurfaceComposeFieldSpec'),
+      },
+      fieldsLayout: ref('FlowSurfaceComposeLayout'),
       settings: ANY_OBJECT_SCHEMA,
       defaultFilter: {
         allOf: [ref('FlowSurfaceFilterGroup')],
@@ -4443,10 +4494,13 @@ const schemas = {
       collectionName: {
         type: 'string',
       },
-      fieldUse: {
-        type: 'string',
-        description: 'Optional compatibility check. The server infers the actual field use from catalog capabilities.',
-      },
+      fieldType: RELATION_FIELD_TYPE_SCHEMA,
+      fields: RELATION_TARGET_FIELDS_SCHEMA,
+      titleField: { type: 'string' },
+      openMode: { type: 'string', example: 'drawer' },
+      popupSize: { type: 'string', example: 'medium' },
+      pageSize: { type: 'number', example: 10 },
+      showIndex: { type: 'boolean', example: true },
       defaultTargetUid: {
         type: 'string',
       },
@@ -4621,6 +4675,11 @@ const schemas = {
       template: ref('FlowSurfaceBlockTemplateRef'),
       resource: ref('FlowSurfaceBlockResourceInput'),
       resourceInit: ref('FlowSurfaceResourceInit'),
+      fields: {
+        type: 'array',
+        items: ref('FlowSurfaceComposeFieldSpec'),
+      },
+      fieldsLayout: ref('FlowSurfaceComposeLayout'),
       settings: ANY_OBJECT_SCHEMA,
       defaultFilter: {
         allOf: [ref('FlowSurfaceFilterGroup')],
@@ -4665,9 +4724,13 @@ const schemas = {
       collectionName: {
         type: 'string',
       },
-      fieldUse: {
-        type: 'string',
-      },
+      fieldType: RELATION_FIELD_TYPE_SCHEMA,
+      fields: RELATION_TARGET_FIELDS_SCHEMA,
+      titleField: { type: 'string' },
+      openMode: { type: 'string', example: 'drawer' },
+      popupSize: { type: 'string', example: 'medium' },
+      pageSize: { type: 'number', example: 10 },
+      showIndex: { type: 'boolean', example: true },
       defaultTargetUid: {
         type: 'string',
       },

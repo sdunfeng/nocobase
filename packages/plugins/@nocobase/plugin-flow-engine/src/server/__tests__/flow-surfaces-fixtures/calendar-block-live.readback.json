@@ -21,6 +21,11 @@
       "weekStart": 1
     },
     "stepParams": {
+      "cardSettings": {
+        "blockHeight": {
+          "heightMode": "fullHeight"
+        }
+      },
       "resourceSettings": {
         "init": {
           "dataSourceKey": "main",
@@ -34,6 +39,54 @@
     "sortIndex": 1,
     "flowRegistry": {},
     "subModels": {
+      "actions": [
+        {
+          "uid": "fcal9b1ock1-filterAction",
+          "use": "FilterActionModel",
+          "parentId": "fcal9b1ock1",
+          "subKey": "actions",
+          "subType": "array",
+          "sortIndex": 1,
+          "stepParams": {
+            "buttonSettings": {
+              "general": {
+                "title": "{{t(\"Filter\")}}"
+              }
+            }
+          }
+        },
+        {
+          "uid": "fcal9b1ock1-addNewAction",
+          "use": "AddNewActionModel",
+          "parentId": "fcal9b1ock1",
+          "subKey": "actions",
+          "subType": "array",
+          "sortIndex": 2,
+          "stepParams": {
+            "buttonSettings": {
+              "general": {
+                "title": "{{t(\"Add new\")}}",
+                "type": "primary"
+              }
+            }
+          }
+        },
+        {
+          "uid": "fcal9b1ock1-refreshAction",
+          "use": "RefreshActionModel",
+          "parentId": "fcal9b1ock1",
+          "subKey": "actions",
+          "subType": "array",
+          "sortIndex": 3,
+          "stepParams": {
+            "buttonSettings": {
+              "general": {
+                "title": "{{t(\"Refresh\")}}"
+              }
+            }
+          }
+        }
+      ],
       "eventViewAction": {
         "uid": "fcal9b1ock1-eventViewAction",
         "use": "CalendarEventViewActionModel",
@@ -94,6 +147,11 @@
         "weekStart": 1
       },
       "stepParams": {
+        "cardSettings": {
+          "blockHeight": {
+            "heightMode": "fullHeight"
+          }
+        },
         "resourceSettings": {
           "init": {
             "dataSourceKey": "main",
@@ -101,6 +159,18 @@
           }
         }
       }
+    },
+    "fcal9b1ock1-filterAction": {
+      "uid": "fcal9b1ock1-filterAction",
+      "use": "FilterActionModel"
+    },
+    "fcal9b1ock1-addNewAction": {
+      "uid": "fcal9b1ock1-addNewAction",
+      "use": "AddNewActionModel"
+    },
+    "fcal9b1ock1-refreshAction": {
+      "uid": "fcal9b1ock1-refreshAction",
+      "use": "RefreshActionModel"
     },
     "fcal9b1ock1-eventViewAction": {
       "uid": "fcal9b1ock1-eventViewAction",

@@ -30,6 +30,8 @@ export const FLOW_SURFACES_TEST_PLUGINS = [
   'system-settings',
   'block-list',
   'block-grid-card',
+  'block-tree',
+  'kanban',
   'block-markdown',
   'block-iframe',
   'block-workbench',

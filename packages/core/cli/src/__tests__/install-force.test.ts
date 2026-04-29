@@ -8,10 +8,12 @@
  */
 
 import fsp from 'node:fs/promises';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, test, vi, expect } from 'vitest';
 import Install from '../commands/install.js';
+import { resolveConfiguredEnvPath } from '../lib/cli-home.js';
 import { findAvailableTcpPort } from '../lib/prompt-validators.js';
 
 const mocks = vi.hoisted(() => ({
@@ -96,17 +98,72 @@ test('startBuiltinDb removes the existing db container before docker run when --
     [
       'docker',
       ['rm', '-f', plan.containerName],
-      { errorName: 'docker rm' },
+      { errorName: 'docker rm', stdio: 'ignore' },
     ],
     [
       'docker',
       plan.args,
-      { errorName: 'docker run' },
+      { errorName: 'docker run', stdio: 'ignore' },
     ],
   ]);
 });
 
-test('downloadLocalApp delegates npm/git downloads through nb download and returns project root', async () => {
+test('startBuiltinDb reuses an existing db container without rechecking its published port', async () => {
+  const storagePath = await useTempStorageDir();
+  const dbPort = await findAvailableTcpPort();
+  const server = await new Promise<net.Server>((resolve, reject) => {
+    const listener = net.createServer();
+    listener.once('error', reject);
+    listener.listen(Number(dbPort), '127.0.0.1', () => resolve(listener));
+  });
+  const command = Object.assign(Object.create(Install.prototype), {
+    ensureDockerNetwork: vi.fn(async () => undefined),
+    dockerContainerExists: vi.fn(async () => true),
+  });
+
+  try {
+    const plan = await (
+      Install.prototype as unknown as {
+        startBuiltinDb: (params: {
+          envName: string;
+          appResults: Record<string, unknown>;
+          downloadResults: Record<string, unknown>;
+          dbResults: Record<string, unknown>;
+          force?: boolean;
+        }) => Promise<{ containerName: string; args: string[] }>;
+      }
+    ).startBuiltinDb.call(command, {
+      envName: 'demo',
+      appResults: {
+        storagePath,
+      },
+      downloadResults: {
+        source: 'git',
+      },
+      dbResults: {
+        dbDialect: 'postgres',
+        dbHost: '127.0.0.1',
+        dbPort,
+        dbDatabase: 'nocobase',
+        dbUser: 'nocobase',
+        dbPassword: 'nocobase',
+      },
+    });
+
+    expect(plan.containerName).toContain('demo-postgres');
+    expect(mocks.run.mock.calls.length).toBe(0);
+    expect(mocks.promptInfo.mock.calls).toEqual([
+      [`Built-in postgres container already exists: ${plan.containerName}`],
+      [`Built-in postgres database is ready at 127.0.0.1:${dbPort}`],
+    ]);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+});
+
+test('downloadLocalApp delegates npm/git downloads through nb source download and returns project root', async () => {
   const projectRoot = await useTempStorageDir();
   const runCommand = vi.fn(async () => ({
     projectRoot,
@@ -128,6 +185,7 @@ test('downloadLocalApp delegates npm/git downloads through nb download and retur
       downloadLocalApp: (params: {
         appResults: Record<string, unknown>;
         downloadResults: Record<string, unknown>;
+        verbose?: boolean;
       }) => Promise<string>;
     }
   ).downloadLocalApp.call(command, {
@@ -141,22 +199,24 @@ test('downloadLocalApp delegates npm/git downloads through nb download and retur
       devDependencies: true,
       build: false,
     },
+    verbose: true,
   });
 
   expect(resolvedProjectRoot).toBe(projectRoot);
-  expect(appResults.appRootPath).toBe(projectRoot);
+  expect(appResults.appRootPath).toBe('./downloaded-app');
   expect(runCommand.mock.calls).toEqual([
     [
-      'download',
+      'source:download',
       [
         '-y',
         '--no-intro',
+        '--verbose',
         '--source',
         'npm',
         '--version',
         'alpha',
         '--output-dir',
-        './downloaded-app',
+        resolveConfiguredEnvPath('./downloaded-app'),
         '--npm-registry',
         'https://registry.npmmirror.com',
         '--replace',
@@ -240,6 +300,7 @@ test('startLocalApp starts npm/git apps with quickstart daemon mode and install 
           INIT_ROOT_PASSWORD: 'admin123',
           INIT_ROOT_NICKNAME: 'Super Admin',
         },
+        stdio: 'ignore',
       },
     ],
     [
@@ -263,6 +324,7 @@ test('startLocalApp starts npm/git apps with quickstart daemon mode and install 
           INIT_ROOT_PASSWORD: 'admin123',
           INIT_ROOT_NICKNAME: 'Super Admin',
         },
+        stdio: 'ignore',
       },
     ],
   ]);
@@ -273,6 +335,54 @@ test('startLocalApp starts npm/git apps with quickstart daemon mode and install 
   expect(plan.appKey.length).toBe(64);
   expect(plan.timeZone.length > 0).toBe(true);
   expect(plan.args).toEqual(['start', '--quickstart', '--daemon']);
+});
+
+test('startLocalApp forwards stdio inherit in verbose mode', async () => {
+  const projectRoot = await useTempStorageDir();
+  const storagePath = await useTempStorageDir();
+  const command = Object.create(Install.prototype);
+  mocks.runNocoBaseCommand.mockResolvedValue(undefined);
+
+  await (
+    Install.prototype as unknown as {
+      startLocalApp: (params: {
+        envName: string;
+        source: 'npm' | 'git';
+        projectRoot: string;
+        appResults: Record<string, unknown>;
+        dbResults: Record<string, unknown>;
+        rootResults: Record<string, unknown>;
+        commandStdio?: 'inherit' | 'ignore';
+      }) => Promise<unknown>;
+    }
+  ).startLocalApp.call(command, {
+    envName: 'demo',
+    source: 'git',
+    projectRoot,
+    appResults: {
+      appPort: '14000',
+      storagePath,
+      lang: 'en-US',
+    },
+    dbResults: {
+      dbDialect: 'postgres',
+      dbHost: '127.0.0.1',
+      dbPort: '5432',
+      dbDatabase: 'nocobase',
+      dbUser: 'nocobase',
+      dbPassword: 'nocobase',
+    },
+    rootResults: {
+      rootUsername: 'nocobase',
+      rootEmail: 'admin@nocobase.com',
+      rootPassword: 'admin123',
+      rootNickname: 'Super Admin',
+    },
+    commandStdio: 'inherit',
+  });
+
+  expect(mocks.runNocoBaseCommand.mock.calls[0]?.[1]?.stdio).toBe('inherit');
+  expect(mocks.runNocoBaseCommand.mock.calls[1]?.[1]?.stdio).toBe('inherit');
 });
 
 test('installDockerApp removes the existing app container before docker run when --force is enabled', async () => {
@@ -330,12 +440,152 @@ test('installDockerApp removes the existing app container before docker run when
     [
       'docker',
       ['rm', '-f', plan.containerName],
-      { errorName: 'docker rm' },
+      { errorName: 'docker rm', stdio: 'ignore' },
     ],
     [
       'docker',
       plan.args,
-      { errorName: 'docker run' },
+      { errorName: 'docker run', stdio: 'ignore' },
     ],
+  ]);
+});
+
+test('startBuiltinDb forwards command stdio to docker run', async () => {
+  const storagePath = await useTempStorageDir();
+  const dbPort = await findAvailableTcpPort();
+  const command = Object.assign(Object.create(Install.prototype), {
+    ensureDockerNetwork: vi.fn(async () => undefined),
+    dockerContainerExists: vi.fn().mockResolvedValue(false),
+  });
+
+  const plan = await (
+    Install.prototype as unknown as {
+      startBuiltinDb: (params: {
+        envName: string;
+        appResults: Record<string, unknown>;
+        downloadResults: Record<string, unknown>;
+        dbResults: Record<string, unknown>;
+        force?: boolean;
+        commandStdio?: 'inherit' | 'ignore';
+      }) => Promise<{ containerName: string; args: string[] }>;
+    }
+  ).startBuiltinDb.call(command, {
+    envName: 'demo',
+    appResults: {
+      storagePath,
+    },
+    downloadResults: {
+      source: 'npm',
+    },
+    dbResults: {
+      dbDialect: 'postgres',
+      dbHost: '127.0.0.1',
+      dbPort,
+      dbDatabase: 'nocobase',
+      dbUser: 'nocobase',
+      dbPassword: 'nocobase',
+    },
+    commandStdio: 'inherit',
+  });
+
+  expect(mocks.run.mock.calls).toEqual([
+    [
+      'docker',
+      plan.args,
+      { errorName: 'docker run', stdio: 'inherit' },
+    ],
+  ]);
+});
+
+test('downloadManagedSource delegates docker downloads through nb source download', async () => {
+  const runCommand = vi.fn(async () => ({
+    resolved: {
+      source: 'docker',
+    },
+  }));
+  const command = Object.assign(Object.create(Install.prototype), {
+    config: {
+      runCommand,
+    },
+  });
+
+  await (
+    Install.prototype as unknown as {
+      downloadManagedSource: (params: {
+        downloadResults: Record<string, unknown>;
+        verbose?: boolean;
+      }) => Promise<unknown>;
+    }
+  ).downloadManagedSource.call(command, {
+    downloadResults: {
+      source: 'docker',
+      version: 'alpha',
+      dockerRegistry: 'nocobase/nocobase',
+      dockerPlatform: 'linux/arm64',
+      replace: true,
+    },
+    verbose: true,
+  });
+
+  expect(runCommand.mock.calls).toEqual([
+    [
+      'source:download',
+      [
+        '-y',
+        '--no-intro',
+        '--verbose',
+        '--source',
+        'docker',
+        '--version',
+        'alpha',
+        '--docker-registry',
+        'nocobase/nocobase',
+        '--docker-platform',
+        'linux/arm64',
+        '--replace',
+      ],
+    ],
+  ]);
+});
+
+test('downloadManagedSource resolves otherVersion before delegating to nb source download', async () => {
+  const runCommand = vi.fn(async () => ({
+    resolved: {
+      source: 'git',
+    },
+  }));
+  const command = Object.assign(Object.create(Install.prototype), {
+    config: {
+      runCommand,
+    },
+  });
+
+  await (
+    Install.prototype as unknown as {
+      downloadManagedSource: (params: {
+        downloadResults: Record<string, unknown>;
+        verbose?: boolean;
+      }) => Promise<unknown>;
+    }
+  ).downloadManagedSource.call(command, {
+    downloadResults: {
+      source: 'git',
+      version: 'other',
+      otherVersion: 'next',
+      gitUrl: 'https://github.com/nocobase/nocobase.git',
+    },
+  });
+
+  expect(runCommand.mock.calls[0]?.[1]).toEqual([
+    '-y',
+    '--no-intro',
+    '--source',
+    'git',
+    '--version',
+    'next',
+    '--output-dir',
+    resolveConfiguredEnvPath('./local/source/'),
+    '--git-url',
+    'https://github.com/nocobase/nocobase.git',
   ]);
 });

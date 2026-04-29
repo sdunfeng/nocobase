@@ -43,10 +43,20 @@ export class PackageUrls {
 
   static async get(packageName: string, lane: PluginClientLane = 'client') {
     const cacheKey = this.getCacheKey(packageName, lane);
-    if (!this.items[cacheKey]) {
-      this.items[cacheKey] = await this.fetch(packageName, lane);
+    const cached = this.items[cacheKey];
+    if (cached) {
+      return cached;
     }
-    return this.items[cacheKey];
+
+    const nextUrl = await this.fetch(packageName, lane);
+
+    if (nextUrl?.includes('?hash=')) {
+      this.items[cacheKey] = nextUrl;
+    } else {
+      delete this.items[cacheKey];
+    }
+
+    return nextUrl;
   }
 
   static async hasClientEntry(packageName: string, lane: PluginClientLane) {
@@ -123,11 +133,24 @@ async function listEnabledPlugins(ctx, lane: PluginClientLane = 'client') {
   return arr;
 }
 
-function normalizePmPluginKeys(filterByTk: string): string[] {
-  return filterByTk
-    .split(',')
-    .map((k) => k.trim())
-    .filter(Boolean);
+function normalizePmPluginKeys(filterByTk: unknown): string[] {
+  if (typeof filterByTk === 'string') {
+    return filterByTk
+      .split(',')
+      .map((k) => k.trim())
+      .filter(Boolean);
+  }
+
+  if (!Array.isArray(filterByTk) || filterByTk.some((item) => typeof item !== 'string')) {
+    return [];
+  }
+
+  return filterByTk.flatMap((item) =>
+    item
+      .split(',')
+      .map((k) => k.trim())
+      .filter(Boolean),
+  );
 }
 
 /** Query/body values often arrive as strings (`"true"`, `"1"`). */
@@ -227,9 +250,6 @@ export default {
     async enable(ctx, next) {
       const { filterByTk, awaitResponse: awaitResponseRaw } = ctx.action.params;
       const app = ctx.app as Application;
-      if (filterByTk == null || filterByTk === '' || typeof filterByTk !== 'string') {
-        ctx.throw(400, 'plugin name invalid');
-      }
       const keys = normalizePmPluginKeys(filterByTk);
       if (!keys.length) {
         ctx.throw(400, 'plugin name invalid');
@@ -249,9 +269,6 @@ export default {
     async disable(ctx, next) {
       const { filterByTk, awaitResponse: awaitResponseRaw } = ctx.action.params;
       const app = ctx.app as Application;
-      if (filterByTk == null || filterByTk === '' || typeof filterByTk !== 'string') {
-        ctx.throw(400, 'plugin name invalid');
-      }
       const keys = normalizePmPluginKeys(filterByTk);
       if (!keys.length) {
         ctx.throw(400, 'plugin name invalid');

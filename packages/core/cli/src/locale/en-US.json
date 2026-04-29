@@ -62,6 +62,13 @@
       "allocateNotDockerPublished": "Failed to allocate an available TCP port that is not already published by Docker.",
       "alreadyInUse": "Port {{port}} is already in use. Choose another port.",
       "alreadyInUseByDocker": "Port {{port}} is already in use by a Docker container. Choose another port."
+    },
+    "dbConnection": {
+      "unreachable": "Can't reach the database at {{host}}:{{port}}. Check the host, port, and network connectivity. Details: {{details}}",
+      "timeout": "Timed out connecting to the database at {{host}}:{{port}} after about {{seconds}} seconds.",
+      "authenticationFailed": "Failed to sign in to database \"{{database}}\" with user \"{{user}}\". Check the username and password.",
+      "databaseNotFound": "Database \"{{database}}\" does not exist or is not accessible with the current connection settings.",
+      "connectionFailed": "Database connection check failed. Details: {{details}}"
     }
   },
   "commands": {
@@ -73,6 +80,8 @@
         },
         "scope": {
           "message": "Where should this connection be saved?",
+          "autoLabel": "Auto",
+          "autoHint": "project if this repo already has .nocobase, otherwise global",
           "projectLabel": "Project",
           "projectHint": ".nocobase in this repo",
           "globalLabel": "Global",
@@ -95,16 +104,67 @@
       }
     },
     "download": {
+      "failures": {
+        "dependencyInstall": {
+          "title": "Couldn't finish preparing the local NocoBase app.",
+          "body": "The download completed, but dependency installation did not finish successfully.",
+          "hint": "Run the same command again with `--verbose` to see the full install logs."
+        },
+        "gitClone": {
+          "title": "Couldn't download NocoBase from Git.",
+          "body": "The CLI was not able to clone the selected NocoBase repository.",
+          "hint": "Run the same command again with `--verbose` to see the full clone logs."
+        },
+        "dockerPull": {
+          "title": "Couldn't download the Docker image.",
+          "body": "The CLI was not able to pull the selected NocoBase image.",
+          "hint": "Run the same command again with `--verbose` to see the full Docker pull logs."
+        },
+        "dockerSave": {
+          "title": "The Docker image was pulled, but saving the tar file failed.",
+          "body": "The CLI could not finish exporting the image to the target tarball path.",
+          "hint": "Run the same command again with `--verbose` to see the full Docker save logs."
+        },
+        "scaffold": {
+          "title": "Couldn't create the local NocoBase app scaffold.",
+          "body": "The CLI was not able to finish generating the initial app files.",
+          "hint": "Run the same command again with `--verbose` to see the full scaffold logs."
+        },
+        "build": {
+          "title": "The local NocoBase app was downloaded, but the build step failed.",
+          "body": "The CLI could not finish building the downloaded source code.",
+          "hint": "Run the same command again with `--verbose` to see the full build logs."
+        },
+        "generic": {
+          "title": "Couldn't finish downloading NocoBase.",
+          "body": "The CLI hit an unexpected command failure while preparing the download.",
+          "hint": "Run the same command again with `--verbose` to see the full command logs."
+        }
+      },
       "prompts": {
         "source": {
           "message": "How would you like to get NocoBase?",
-          "npmLabel": "npm package",
-          "gitLabel": "Git repository",
-          "dockerLabel": "Docker image"
+          "dockerLabel": "Docker install (Recommended)",
+          "dockerHint": "Best for no-code and low-maintenance setups. You can upgrade later by pulling a newer image and restarting the app.",
+          "npmLabel": "create-nocobase-app install",
+          "npmHint": "Best when you want an app project with business code kept separate from the NocoBase framework, while still supporting low-code development.",
+          "gitLabel": "Git source install",
+          "gitHint": "Best when you want to try the latest unreleased changes, contribute code, or debug and modify NocoBase source directly. This option is more developer-oriented."
         },
         "version": {
-          "message": "Which version would you like to use? You can enter a package version, Docker image tag, or Git ref such as a branch name.",
-          "placeholder": "alpha"
+          "message": "Which version would you like to use?",
+          "latestLabel": "latest",
+          "latestHint": "Stable release. Best for production use and the most predictable experience. Currently unavailable.",
+          "betaLabel": "beta",
+          "betaHint": "Preview release. Good for trying upcoming features before general release.",
+          "alphaLabel": "alpha",
+          "alphaHint": "Development release. Includes the newest changes, but may be incomplete or unstable.",
+          "otherLabel": "Other",
+          "otherHint": "Enter another package version, Docker tag, or Git ref manually, such as a branch name."
+        },
+        "otherVersion": {
+          "message": "Enter the version, Docker tag, or Git ref you want to use.",
+          "placeholder": "For example: fix/cli-v2"
         },
         "dockerRegistry": {
           "message": "Which Docker registry would you like to use? The image tag is set separately in Version.",
@@ -217,14 +277,15 @@
     },
     "init": {
       "validation": {
-        "envExists": "Env \"{{envName}}\" already exists in this workspace. Choose another env name."
+        "envExists": "Env \"{{envName}}\" already exists. Choose another env name."
       },
       "messages": {
-        "title": "Set Up Your NocoBase AI Workspace",
+        "title": "Set Up NocoBase for Coding Agents",
         "appNameRequiredWhenSkipped": "Env name is required when prompts are skipped.",
         "appNameEnvHelp": "Use `nb init --yes --env <envName>` to continue.",
         "resumeEnvRequired": "Env name is required when resuming setup.",
         "resumeEnvHelp": "Use `nb init --resume --env <envName>` to continue.",
+        "resumeAfterInstallFailure": "Resume this setup with:\n  {{command}}",
         "uiOpening": "A local setup form will open in your browser. That form needs a person to fill it in. If you are using an AI agent, do not stop this process while the CLI waits for the submission.",
         "uiReady": "Local setup form is ready.",
         "uiReadyHelp": "If your browser does not open automatically, copy the URL below into your browser to continue. Keep this terminal session running while the CLI waits for the submission.",
@@ -249,24 +310,24 @@
         }
       },
       "webUi": {
-        "pageTitle": "Set Up Your NocoBase AI Workspace",
-        "documentHeading": "Set Up Your NocoBase AI Workspace",
-        "documentHint": "Connect an existing NocoBase app, or install a new one and connect it, so coding agents can work with NocoBase in this workspace.",
+        "pageTitle": "Set Up NocoBase for Coding Agents",
+        "documentHeading": "Set Up NocoBase for Coding Agents",
+        "documentHint": "Connect an existing NocoBase app, or install a new one, so coding agents can access and work with NocoBase.",
         "gettingStarted": {
           "title": "Getting started",
-          "description": "Pick your setup path."
+          "description": "Choose whether to connect an existing app or install a new one."
         },
         "connectExistingApp": {
           "title": "Connect an existing app",
-          "description": "Add your app connection."
+          "description": "Save your app connection."
         },
         "createNewApp": {
-          "title": "Create a new app",
-          "description": "Set project basics."
+          "title": "Install a new app",
+          "description": "Set app basics and install options."
         },
         "downloadAppFiles": {
           "title": "Download app files",
-          "description": "Choose source and options."
+          "description": "Choose how to get the app files."
         },
         "configureDatabase": {
           "title": "Configure the database",

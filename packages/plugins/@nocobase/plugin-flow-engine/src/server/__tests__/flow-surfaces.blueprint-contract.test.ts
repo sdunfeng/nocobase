@@ -52,6 +52,10 @@ describe('flowSurfaces applyBlueprint contract', () => {
     );
   }
 
+  function findDescendantNode(node: any, predicate: (input: any) => boolean) {
+    return collectDescendantNodes(node, predicate)[0];
+  }
+
   function readDirectFormFieldPaths(node: any) {
     return _.castArray(node?.subModels?.grid?.subModels?.items || [])
       .map((item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath)
@@ -71,6 +75,28 @@ describe('flowSurfaces applyBlueprint contract', () => {
 
   function readCardItemRecordActionUses(node: any) {
     return _.castArray(node?.subModels?.item?.subModels?.actions || []).map((item: any) => item?.use);
+  }
+
+  function expectAssignedValuesMirrors(actionTree: any, assignedValues: Record<string, any>) {
+    expect(actionTree.stepParams?.assignSettings?.assignFieldValues?.assignedValues).toEqual(assignedValues);
+    expect(actionTree.stepParams?.apply?.apply?.assignedValues).toEqual(assignedValues);
+  }
+
+  function expectAssignFormGridItems(actionTree: any, assignedValues: Record<string, any>) {
+    const items = _.castArray(actionTree.subModels?.assignForm?.subModels?.grid?.subModels?.items || []);
+    expect(items).toHaveLength(Object.keys(assignedValues).length);
+    Object.entries(assignedValues).forEach(([fieldPath, value]) => {
+      const item = items.find((candidate: any) => candidate?.stepParams?.fieldSettings?.init?.fieldPath === fieldPath);
+      expect(item).toBeTruthy();
+      expect(item?.use).toBe('AssignFormItemModel');
+      expect(item?.stepParams?.fieldSettings?.assignValue?.value).toEqual(value);
+      expect(item?.subModels?.field?.uid).toBeTruthy();
+      expect(item?.subModels?.field?.stepParams?.fieldSettings?.init).toMatchObject({
+        dataSourceKey: 'main',
+        collectionName: 'employees',
+        fieldPath,
+      });
+    });
   }
 
   async function readPrimaryPopupBlockFromAction(actionUid: string) {
@@ -343,6 +369,11 @@ describe('flowSurfaces applyBlueprint contract', () => {
         },
       },
       stepParams: {
+        cardSettings: {
+          blockHeight: {
+            heightMode: 'fullHeight',
+          },
+        },
         resourceSettings: {
           init: {
             dataSourceKey: 'main',
@@ -373,13 +404,17 @@ describe('flowSurfaces applyBlueprint contract', () => {
       mode: 'drawer',
       size: 'large',
     });
-    expect(readNodeActionUses(calendarBlock)).toEqual([
-      'CalendarTodayActionModel',
-      'CalendarNavActionModel',
-      'CalendarTitleActionModel',
-      'CalendarViewSelectActionModel',
-      'RefreshActionModel',
-    ]);
+    expect(readNodeActionUses(calendarBlock)).toEqual(
+      expect.arrayContaining([
+        'FilterActionModel',
+        'AddNewActionModel',
+        'CalendarTodayActionModel',
+        'CalendarNavActionModel',
+        'CalendarTitleActionModel',
+        'CalendarViewSelectActionModel',
+        'RefreshActionModel',
+      ]),
+    );
   });
 
   it('should reject calendar main block fields fieldGroups and recordActions in applyBlueprint', async () => {
@@ -446,6 +481,257 @@ describe('flowSurfaces applyBlueprint contract', () => {
     }
   });
 
+  it('should create flow-model tree blocks through applyBlueprint and reject unsupported tree containers', async () => {
+    const executeRes = await rootAgent.resource('flowSurfaces').applyBlueprint({
+      values: {
+        mode: 'create',
+        navigation: {
+          item: {
+            title: 'Tree blueprint',
+          },
+        },
+        page: {
+          title: 'Tree blueprint',
+        },
+        tabs: [
+          {
+            title: 'Tree',
+            blocks: [
+              {
+                key: 'categoryTree',
+                type: 'tree',
+                resource: {
+                  dataSourceKey: 'main',
+                  collectionName: 'categories',
+                },
+                settings: {
+                  searchable: false,
+                  defaultExpandAll: true,
+                  includeDescendants: true,
+                  pageSize: 200,
+                  titleField: 'title',
+                },
+              },
+            ],
+            layout: {
+              rows: [[{ key: 'categoryTree', span: 8 }]],
+            },
+          },
+        ],
+      },
+    });
+
+    expect(executeRes.status, readErrorMessage(executeRes)).toBe(200);
+    const data = getData(executeRes);
+    const treeBlock = collectDescendantNodes(data.surface.tree, (item) => item?.use === 'TreeBlockModel')[0];
+    expect(treeBlock).toMatchObject({
+      use: 'TreeBlockModel',
+      props: {
+        searchable: false,
+        defaultExpandAll: true,
+        includeDescendants: true,
+        pageSize: 200,
+        fieldNames: {
+          title: 'title',
+        },
+      },
+      stepParams: {
+        resourceSettings: {
+          init: {
+            dataSourceKey: 'main',
+            collectionName: 'categories',
+          },
+        },
+        treeSettings: {
+          searchable: {
+            searchable: false,
+          },
+          defaultExpandAll: {
+            defaultExpandAll: true,
+          },
+          includeDescendants: {
+            includeDescendants: true,
+          },
+          pageSize: {
+            pageSize: 200,
+          },
+          titleField: {
+            titleField: 'title',
+          },
+        },
+      },
+    });
+    expect(treeBlock.subModels).toBeUndefined();
+
+    const invalidCases = [
+      {
+        key: 'fields',
+        payload: {
+          fields: ['title'],
+        },
+        message: 'fields is not supported on tree blocks',
+      },
+      {
+        key: 'fieldGroups',
+        payload: {
+          fieldGroups: [
+            {
+              title: 'Tree fields',
+              fields: ['title'],
+            },
+          ],
+        },
+        message: 'fieldGroups is not supported on tree blocks',
+      },
+      {
+        key: 'actions',
+        payload: {
+          actions: ['refresh'],
+        },
+        message: 'actions is not supported on tree blocks',
+      },
+      {
+        key: 'recordActions',
+        payload: {
+          recordActions: ['view'],
+        },
+        message: 'recordActions is not supported on tree blocks',
+      },
+    ];
+
+    for (const item of invalidCases) {
+      const invalidRes = await rootAgent.resource('flowSurfaces').applyBlueprint({
+        values: {
+          mode: 'create',
+          navigation: {
+            item: {
+              title: `Invalid tree blueprint ${item.key}`,
+            },
+          },
+          page: {
+            title: `Invalid tree blueprint ${item.key}`,
+          },
+          tabs: [
+            {
+              title: 'Tree',
+              blocks: [
+                {
+                  key: 'categoryTree',
+                  type: 'tree',
+                  collection: 'categories',
+                  ...item.payload,
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      expect(invalidRes.status).toBe(400);
+      expect(readErrorMessage(invalidRes)).toContain(item.message);
+    }
+  });
+
+  it('should persist tree connectFields targets from applyBlueprint settings', async () => {
+    const executeRes = await rootAgent.resource('flowSurfaces').applyBlueprint({
+      values: {
+        mode: 'create',
+        navigation: {
+          item: {
+            title: 'Tree connect blueprint',
+          },
+        },
+        page: {
+          title: 'Tree connect blueprint',
+        },
+        tabs: [
+          {
+            key: 'main',
+            title: 'Tree connect',
+            blocks: [
+              {
+                key: 'usersTree',
+                type: 'tree',
+                collection: 'employees',
+                settings: {
+                  connectFields: {
+                    targets: [{ target: 'usersTable' }],
+                  },
+                },
+              },
+              {
+                key: 'usersTable',
+                type: 'table',
+                collection: 'employees',
+              },
+            ],
+            layout: {
+              rows: [
+                [
+                  { key: 'usersTree', span: 8 },
+                  { key: 'usersTable', span: 16 },
+                ],
+              ],
+            },
+          },
+        ],
+      },
+    });
+
+    expect(executeRes.status, readErrorMessage(executeRes)).toBe(200);
+    const data = getData(executeRes);
+    const treeBlock = findDescendantNode(data.surface.tree, (item) => item?.use === 'TreeBlockModel');
+    const tableBlock = findDescendantNode(data.surface.tree, (item) => item?.use === 'TableBlockModel');
+    const blockGrid = findDescendantNode(data.surface.tree, (item) => item?.use === 'BlockGridModel');
+    expect(blockGrid?.filterManager).toEqual(
+      expect.arrayContaining([
+        {
+          filterId: treeBlock.uid,
+          targetId: tableBlock.uid,
+          filterPaths: ['id'],
+        },
+      ]),
+    );
+  });
+
+  it('should reject duplicate tree connectFields targets from applyBlueprint settings', async () => {
+    const duplicateRes = await rootAgent.resource('flowSurfaces').applyBlueprint({
+      values: {
+        mode: 'create',
+        navigation: {
+          item: {
+            title: 'Duplicate tree connect blueprint',
+          },
+        },
+        tabs: [
+          {
+            key: 'main',
+            blocks: [
+              {
+                key: 'usersTree',
+                type: 'tree',
+                collection: 'employees',
+                settings: {
+                  connectFields: {
+                    targets: [{ target: 'usersTable' }, { target: 'usersTable', filterPaths: ['id'] }],
+                  },
+                },
+              },
+              {
+                key: 'usersTable',
+                type: 'table',
+                collection: 'employees',
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(duplicateRes.status).toBe(400);
+    expect(readErrorMessage(duplicateRes)).toContain('duplicate target');
+  });
+
   it('should apply block-level defaultFilter in applyBlueprint data blocks and prefer explicit action settings', async () => {
     const blockDefaultFilter = {
       logic: '$and',
@@ -464,6 +750,16 @@ describe('flowSurfaces applyBlueprint contract', () => {
           path: 'status',
           operator: '$eq',
           value: 'active',
+        },
+      ],
+    };
+    const calendarBlockDefaultFilter = {
+      logic: '$and',
+      items: [
+        {
+          path: 'title',
+          operator: '$includes',
+          value: 'planning',
         },
       ],
     };
@@ -494,7 +790,7 @@ describe('flowSurfaces applyBlueprint contract', () => {
                 key: 'employeesList',
                 type: 'list',
                 collection: 'employees',
-                defaultFilter: {},
+                defaultFilter: blockDefaultFilter,
                 fields: ['nickname'],
               },
               {
@@ -513,9 +809,15 @@ describe('flowSurfaces applyBlueprint contract', () => {
                   },
                 ],
               },
+              {
+                key: 'eventsCalendar',
+                type: 'calendar',
+                collection: 'calendar_events',
+                defaultFilter: calendarBlockDefaultFilter,
+              },
             ],
             layout: {
-              rows: [['employeesTable'], ['employeesList'], ['employeesCards']],
+              rows: [['employeesTable'], ['employeesList'], ['employeesCards'], ['eventsCalendar']],
             },
           },
         ],
@@ -527,6 +829,7 @@ describe('flowSurfaces applyBlueprint contract', () => {
     const tableBlock = collectDescendantNodes(data.surface.tree, (item) => item?.use === 'TableBlockModel')[0];
     const listBlock = collectDescendantNodes(data.surface.tree, (item) => item?.use === 'ListBlockModel')[0];
     const gridCardBlock = collectDescendantNodes(data.surface.tree, (item) => item?.use === 'GridCardBlockModel')[0];
+    const calendarBlock = collectDescendantNodes(data.surface.tree, (item) => item?.use === 'CalendarBlockModel')[0];
     const tableFilterAction = _.castArray(tableBlock?.subModels?.actions || []).find(
       (item: any) => item?.use === 'FilterActionModel',
     );
@@ -536,22 +839,217 @@ describe('flowSurfaces applyBlueprint contract', () => {
     const gridCardFilterAction = _.castArray(gridCardBlock?.subModels?.actions || []).find(
       (item: any) => item?.use === 'FilterActionModel',
     );
+    const calendarFilterAction = _.castArray(calendarBlock?.subModels?.actions || []).find(
+      (item: any) => item?.use === 'FilterActionModel',
+    );
 
     expect(tableFilterAction?.props?.defaultFilterValue).toEqual(blockDefaultFilter);
     expect(tableFilterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(blockDefaultFilter);
     expect(tableFilterAction?.props?.filterableFieldNames).toBeUndefined();
-    expect(listFilterAction?.props?.defaultFilterValue).toEqual({
-      logic: '$and',
-      items: [],
-    });
-    expect(listFilterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual({
-      logic: '$and',
-      items: [],
-    });
+    expect(listFilterAction?.props?.defaultFilterValue).toEqual(blockDefaultFilter);
+    expect(listFilterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(blockDefaultFilter);
     expect(gridCardFilterAction?.props?.defaultFilterValue).toEqual(explicitActionFilter);
     expect(gridCardFilterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(
       explicitActionFilter,
     );
+    expect(calendarFilterAction?.props?.defaultFilterValue).toEqual(calendarBlockDefaultFilter);
+    expect(calendarFilterAction?.stepParams?.filterSettings?.defaultFilter?.defaultFilter).toEqual(
+      calendarBlockDefaultFilter,
+    );
+  });
+
+  it('should accept sort as a compatibility alias for sorting in applyBlueprint block settings', async () => {
+    const executeRes = await rootAgent.resource('flowSurfaces').applyBlueprint({
+      values: {
+        mode: 'create',
+        navigation: {
+          item: {
+            title: 'Employees sort alias blueprint',
+          },
+        },
+        page: {
+          title: 'Employees sort alias blueprint',
+        },
+        tabs: [
+          {
+            title: 'Overview',
+            blocks: [
+              {
+                key: 'employeesTable',
+                type: 'table',
+                collection: 'employees',
+                settings: {
+                  sort: ['-createdAt', 'nickname'],
+                },
+                fields: ['nickname'],
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(executeRes.status, readErrorMessage(executeRes)).toBe(200);
+    const data = getData(executeRes);
+    const tableBlock = collectDescendantNodes(data.surface.tree, (item) => item?.use === 'TableBlockModel')[0];
+    expect(tableBlock?.stepParams?.tableSettings?.defaultSorting?.sort).toEqual([
+      {
+        field: 'createdAt',
+        direction: 'desc',
+      },
+      {
+        field: 'nickname',
+        direction: 'asc',
+      },
+    ]);
+
+    const conflictRes = await rootAgent.resource('flowSurfaces').applyBlueprint({
+      values: {
+        mode: 'create',
+        navigation: {
+          item: {
+            title: 'Employees sort conflict blueprint',
+          },
+        },
+        tabs: [
+          {
+            title: 'Overview',
+            blocks: [
+              {
+                key: 'employeesTable',
+                type: 'table',
+                collection: 'employees',
+                settings: {
+                  sort: ['-createdAt'],
+                  sorting: [
+                    {
+                      field: 'createdAt',
+                      direction: 'asc',
+                    },
+                  ],
+                },
+                fields: ['nickname'],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(conflictRes.status).toBe(400);
+    expect(readErrorMessage(conflictRes)).toContain('sort');
+    expect(readErrorMessage(conflictRes)).toContain('sorting');
+  });
+
+  it('should normalize public sort direction aliases in applyBlueprint block settings', async () => {
+    const executeRes = await rootAgent.resource('flowSurfaces').applyBlueprint({
+      values: {
+        mode: 'create',
+        navigation: {
+          item: {
+            title: 'Employees sort direction alias blueprint',
+          },
+        },
+        page: {
+          title: 'Employees sort direction alias blueprint',
+        },
+        tabs: [
+          {
+            title: 'Overview',
+            blocks: [
+              {
+                key: 'employeesTable',
+                type: 'table',
+                collection: 'employees',
+                settings: {
+                  sort: [
+                    {
+                      field: 'createdAt',
+                      direction: 'ascending',
+                    },
+                    {
+                      field: 'nickname',
+                      direction: 'descending',
+                    },
+                  ],
+                },
+                fields: ['nickname'],
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(executeRes.status, readErrorMessage(executeRes)).toBe(200);
+    const data = getData(executeRes);
+    const tableBlock = collectDescendantNodes(data.surface.tree, (item) => item?.use === 'TableBlockModel')[0];
+    expect(tableBlock?.stepParams?.tableSettings?.defaultSorting?.sort).toEqual([
+      {
+        field: 'createdAt',
+        direction: 'asc',
+      },
+      {
+        field: 'nickname',
+        direction: 'desc',
+      },
+    ]);
+  });
+
+  it('should reject empty block-level defaultFilter groups in applyBlueprint data blocks', async () => {
+    for (const block of [
+      {
+        key: 'employeesTable',
+        type: 'table',
+        collection: 'employees',
+        defaultFilter: {},
+        fields: ['nickname'],
+      },
+      {
+        key: 'eventsCalendar',
+        type: 'calendar',
+        collection: 'calendar_events',
+        defaultFilter: null,
+      },
+      {
+        key: 'tasksKanban',
+        type: 'kanban',
+        collection: 'tasks',
+        defaultFilter: {
+          logic: '$and',
+          items: [],
+        },
+        fields: ['title'],
+      },
+    ]) {
+      const executeRes = await rootAgent.resource('flowSurfaces').applyBlueprint({
+        values: {
+          mode: 'create',
+          navigation: {
+            item: {
+              title: `Empty default filter ${block.key}`,
+            },
+          },
+          page: {
+            title: `Empty default filter ${block.key}`,
+          },
+          tabs: [
+            {
+              title: 'Overview',
+              blocks: [block],
+              layout: {
+                rows: [[block.key]],
+              },
+            },
+          ],
+        },
+      });
+
+      expect(executeRes.status).toBe(400);
+      const message = readErrorMessage(executeRes);
+      expect(message).toContain('must include at least one concrete filter item');
+      expect(message).toContain('flowSurfaces applyBlueprint tabs[0].blocks[0].defaultFilter');
+      expect(message).not.toContain('flowSurfaces applyBlueprint flowSurfaces applyBlueprint');
+    }
   });
 
   it('should auto-complete bare relation fields in applyBlueprint with non-empty view popups', async () => {
@@ -969,16 +1467,12 @@ describe('flowSurfaces applyBlueprint contract', () => {
     const { popupBlock } = await readPrimaryPopupBlockFromAction(addNewAction.uid);
     expect(popupBlock?.use).toBe('CreateFormModel');
 
-    const checkboxGroupField = collectDescendantNodes(
+    const checkboxGroupFormItem = collectDescendantNodes(
       popupBlock,
-      (item) =>
-        item?.use === 'SelectFieldModel' && item?.stepParams?.fieldSettings?.init?.fieldPath === checkboxGroupFieldPath,
+      (item) => item?.stepParams?.fieldSettings?.init?.fieldPath === checkboxGroupFieldPath,
     )[0];
-    expect(checkboxGroupField?.use).toBe('SelectFieldModel');
-    expect(checkboxGroupField?.props).toMatchObject({
-      allowClear: true,
-      mode: 'tags',
-    });
+    const checkboxGroupField = _.castArray(checkboxGroupFormItem?.subModels?.field || [])[0];
+    expect(checkboxGroupField?.use).toBe('CheckboxGroupFieldModel');
   });
 
   it('should apply blueprint defaults to generated popup names and grouped popup fields', async () => {
@@ -3025,6 +3519,77 @@ describe('flowSurfaces applyBlueprint contract', () => {
     ]);
   });
 
+  it('should applyBlueprint update actions with assignValues settings and mirror assignedValues', async () => {
+    const executeRes = await rootAgent.resource('flowSurfaces').applyBlueprint({
+      values: {
+        version: '1',
+        mode: 'create',
+        navigation: {
+          item: {
+            title: `Blueprint assign values page ${Date.now()}`,
+          },
+        },
+        tabs: [
+          {
+            title: 'Employees',
+            blocks: [
+              {
+                type: 'table',
+                collection: 'employees',
+                fields: ['nickname', 'status'],
+                actions: [
+                  {
+                    type: 'bulkUpdate',
+                    settings: {
+                      assignValues: {
+                        status: 'inactive',
+                      },
+                    },
+                  },
+                ],
+                recordActions: [
+                  {
+                    type: 'updateRecord',
+                    settings: {
+                      assignValues: {
+                        status: 'active',
+                      },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(executeRes.status, readErrorMessage(executeRes)).toBe(200);
+    const data = getData(executeRes);
+    const bulkUpdateAction = collectDescendantNodes(
+      data.surface.tree,
+      (item) => item?.use === 'BulkUpdateActionModel',
+    )[0];
+    const updateRecordAction = collectDescendantNodes(
+      data.surface.tree,
+      (item) => item?.use === 'UpdateRecordActionModel',
+    )[0];
+    expect(bulkUpdateAction?.uid).toBeTruthy();
+    expect(updateRecordAction?.uid).toBeTruthy();
+    expectAssignedValuesMirrors(bulkUpdateAction, {
+      status: 'inactive',
+    });
+    expectAssignFormGridItems(bulkUpdateAction, {
+      status: 'inactive',
+    });
+    expectAssignedValuesMirrors(updateRecordAction, {
+      status: 'active',
+    });
+    expectAssignFormGridItems(updateRecordAction, {
+      status: 'active',
+    });
+  });
+
   it('should auto-inject submit into applyBlueprint create and edit forms and keep it first', async () => {
     const executeRes = await rootAgent.resource('flowSurfaces').applyBlueprint({
       values: {
@@ -4222,6 +4787,52 @@ describe('flowSurfaces applyBlueprint contract', () => {
       row1: [24],
       row2: [12, 12],
     });
+  });
+
+  it('should apply relation fieldType on blueprint field objects without creating standalone table blocks', async () => {
+    const executeRes = await rootAgent.resource('flowSurfaces').applyBlueprint({
+      values: {
+        version: '1',
+        mode: 'create',
+        page: {
+          title: 'Blueprint relation fieldType',
+        },
+        tabs: [
+          {
+            key: 'overview',
+            title: 'Overview',
+            blocks: [
+              {
+                key: 'userForm',
+                type: 'createForm',
+                collection: 'users',
+                fields: [
+                  {
+                    key: 'rolesField',
+                    field: 'roles',
+                    fieldType: 'popupSubTable',
+                    fields: ['title', 'name'],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(executeRes.status).toBe(200);
+    const data = getData(executeRes);
+    const formBlock = _.castArray(data.surface?.tree?.subModels?.tabs || [])[0]?.subModels?.grid?.subModels?.items?.[0];
+    const formItems = _.castArray(formBlock?.subModels?.grid?.subModels?.items || []);
+    expect(formItems).toHaveLength(1);
+    expect(formItems[0]?.use).toBe('FormItemModel');
+    expect(formItems[0]?.subModels?.field?.use).toBe('PopupSubTableFieldModel');
+    expect(
+      _.castArray(formItems[0]?.subModels?.field?.subModels?.subTableColumns || [])
+        .filter((item: any) => item?.use === 'TableColumnModel')
+        .map((item: any) => item?.stepParams?.fieldSettings?.init?.fieldPath),
+    ).toEqual(['roles.title', 'roles.name']);
   });
 
   it('should reject fieldsLayout on applyBlueprint blocks that do not own a field grid', async () => {

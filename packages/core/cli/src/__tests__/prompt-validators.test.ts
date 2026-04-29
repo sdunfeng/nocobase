@@ -12,7 +12,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, test, vi, expect } from 'vitest';
-import Download, { defaultDockerRegistryForLang } from '../commands/download.js';
+import Download, { defaultDockerRegistryForLang } from '../commands/source/download.js';
 import Init from '../commands/init.js';
 import EnvAdd from '../commands/env/add.js';
 import Install from '../commands/install.js';
@@ -26,6 +26,35 @@ import {
   validateTcpPort,
   validateEnvKey,
 } from '../lib/prompt-validators.js';
+import { clearExternalDbValidationCache } from '../lib/db-connection-check.js';
+
+const mockPgConnect = vi.fn();
+const mockPgQuery = vi.fn();
+const mockPgEnd = vi.fn();
+const mockMysqlCreateConnection = vi.fn();
+const mockMariaDbCreateConnection = vi.fn();
+
+vi.mock('pg', () => ({
+  default: {
+    Client: vi.fn(() => ({
+      connect: mockPgConnect,
+      query: mockPgQuery,
+      end: mockPgEnd,
+    })),
+  },
+}));
+
+vi.mock('mysql2/promise', () => ({
+  default: {
+    createConnection: mockMysqlCreateConnection,
+  },
+}));
+
+vi.mock('mariadb', () => ({
+  default: {
+    createConnection: mockMariaDbCreateConnection,
+  },
+}));
 
 async function withTempProjectCwd(run: () => Promise<void>) {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'nocobase-cli-project-'));
@@ -51,6 +80,12 @@ afterEach(() => {
     return;
   }
   process.env.NB_LOCALE = originalNbLocale;
+  clearExternalDbValidationCache();
+  mockPgConnect.mockReset();
+  mockPgQuery.mockReset();
+  mockPgEnd.mockReset();
+  mockMysqlCreateConnection.mockReset();
+  mockMariaDbCreateConnection.mockReset();
 });
 
 test('validateApiBaseUrl accepts http and https URLs', () => {
@@ -93,10 +128,48 @@ test('validateAvailableTcpPort rejects invalid and occupied ports', async () => 
 });
 
 test('findAvailableTcpPort returns a free TCP port', async () => {
-  const port = await findAvailableTcpPort();
-  expect(typeof port).toBe('string');
-  expect(port).toMatch(/^\d+$/);
-  expect(await validateAvailableTcpPort(port)).toBe(undefined);
+  let reservedPort: string | undefined;
+  let reservedServer: net.Server | undefined;
+
+  try {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const port = await findAvailableTcpPort();
+      expect(typeof port).toBe('string');
+      expect(port).toMatch(/^\d+$/);
+
+      const server = net.createServer();
+      const bound = await new Promise<boolean>((resolve) => {
+        server.once('error', () => resolve(false));
+        server.listen(Number(port), '127.0.0.1', () => resolve(true));
+      });
+
+      if (!bound) {
+        await new Promise<void>((resolve) => {
+          server.close(() => resolve());
+        });
+        continue;
+      }
+
+      reservedPort = port;
+      reservedServer = server;
+      break;
+    }
+
+    expect(reservedPort).toBeTruthy();
+    expect(reservedServer?.listening).toBe(true);
+  } finally {
+    if (reservedServer) {
+      await new Promise<void>((resolve, reject) => {
+        reservedServer!.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+    }
+  }
 });
 
 test('validateTcpPort rejects invalid ports and accepts valid ones', () => {
@@ -123,7 +196,7 @@ test('init and env add prompts validate apiBaseUrl', async () => {
   expect(envAddPrompt.validate?.('ftp://example.com/api', {}) ?? '').toMatch(/http:\/\/ or https:\/\//);
 });
 
-test('init appName validates workspace env name uniqueness', async () => {
+test('init appName validates global env name uniqueness', async () => {
   await withTempProjectCwd(async () => {
     await saveAuthConfig(
       {
@@ -134,7 +207,7 @@ test('init appName validates workspace env name uniqueness', async () => {
           },
         },
       },
-      { scope: 'project' },
+      { scope: 'global' },
     );
 
     const appNamePrompt = Init.prompts.appName;
@@ -144,7 +217,7 @@ test('init appName validates workspace env name uniqueness', async () => {
   });
 });
 
-test('init appName allows reusing a workspace env name when --force is set', async () => {
+test('init appName allows reusing a global env name when --force is set', async () => {
   await withTempProjectCwd(async () => {
     await saveAuthConfig(
       {
@@ -155,7 +228,7 @@ test('init appName allows reusing a workspace env name when --force is set', asy
           },
         },
       },
-      { scope: 'project' },
+      { scope: 'global' },
     );
 
     const appNamePrompt = Init.prompts.appName;
@@ -170,7 +243,7 @@ test('init appName allows reusing a workspace env name when --force is set', asy
   });
 });
 
-test('init --yes --env validates workspace env name uniqueness through preset values', async () => {
+test('init --yes --env validates global env name uniqueness through preset values', async () => {
   await withTempProjectCwd(async () => {
     await saveAuthConfig(
       {
@@ -181,7 +254,7 @@ test('init --yes --env validates workspace env name uniqueness through preset va
           },
         },
       },
-      { scope: 'project' },
+      { scope: 'global' },
     );
 
     await expect((() =>
@@ -200,7 +273,7 @@ test('init --yes --env validates workspace env name uniqueness through preset va
               },
             },
           },
-        ))()).rejects.toThrow(/already exists in this workspace/i);
+        ))()).rejects.toThrow(/already exists/i);
   });
 });
 
@@ -310,7 +383,79 @@ test('install prompts expose the expected defaults and validators', () => {
   expect(rootNicknamePrompt.required).toBe(true);
 });
 
-test('docker image defaults follow app language', () => {
+test('install external db validators skip connection checks until config is complete', async () => {
+  const dbHostPrompt = Install.dbPrompts.dbHost;
+
+  expect(await dbHostPrompt.validate?.('db.example.com', {
+    builtinDb: false,
+    dbDialect: 'postgres',
+    dbHost: 'db.example.com',
+    dbPort: '5432',
+    dbDatabase: 'nocobase',
+    dbUser: 'nocobase',
+    dbPassword: '',
+  })).toBe(undefined);
+
+  expect(mockPgConnect).not.toHaveBeenCalled();
+});
+
+test('install external db validators do not run for built-in database config', async () => {
+  const dbPasswordPrompt = Install.dbPrompts.dbPassword;
+
+  expect(await dbPasswordPrompt.validate?.('secret', {
+    builtinDb: true,
+    dbDialect: 'postgres',
+    dbHost: 'postgres',
+    dbPort: '5432',
+    dbDatabase: 'nocobase',
+    dbUser: 'nocobase',
+    dbPassword: 'secret',
+  })).toBe(undefined);
+
+  expect(mockPgConnect).not.toHaveBeenCalled();
+});
+
+test('install external db validators check connectivity once config is complete', async () => {
+  const dbPasswordPrompt = Install.dbPrompts.dbPassword;
+  mockPgConnect.mockResolvedValue(undefined);
+  mockPgQuery.mockResolvedValue([{ '?column?': 1 }]);
+  mockPgEnd.mockResolvedValue(undefined);
+
+  const result = await dbPasswordPrompt.validate?.('secret', {
+    builtinDb: false,
+    dbDialect: 'postgres',
+    dbHost: 'db.example.com',
+    dbPort: '5432',
+    dbDatabase: 'nocobase',
+    dbUser: 'nocobase',
+    dbPassword: 'secret',
+  });
+
+  expect(result).toBe(undefined);
+  expect(mockPgConnect).toHaveBeenCalledTimes(1);
+  expect(mockPgQuery).toHaveBeenCalledWith('SELECT 1');
+  expect(mockPgEnd).toHaveBeenCalledTimes(1);
+});
+
+test('install external db validators surface readable auth errors', async () => {
+  const dbPasswordPrompt = Install.dbPrompts.dbPassword;
+  mockPgConnect.mockRejectedValue(Object.assign(new Error('password authentication failed'), { code: '28P01' }));
+  mockPgEnd.mockResolvedValue(undefined);
+
+  const result = await dbPasswordPrompt.validate?.('bad-secret', {
+    builtinDb: false,
+    dbDialect: 'postgres',
+    dbHost: 'db.example.com',
+    dbPort: '5432',
+    dbDatabase: 'nocobase',
+    dbUser: 'nocobase',
+    dbPassword: 'bad-secret',
+  });
+
+  expect(result ?? '').toMatch(/username and password/i);
+});
+
+test('docker registry defaults follow CLI locale', () => {
   const dockerRegistryPrompt = Download.prompts.dockerRegistry;
   const dockerPlatformPrompt = Download.prompts.dockerPlatform;
 
@@ -318,8 +463,12 @@ test('docker image defaults follow app language', () => {
   expect(defaultDockerRegistryForLang('en-US')).toBe('nocobase/nocobase');
 
   expect(dockerRegistryPrompt.type).toBe('text');
+  process.env.NB_LOCALE = 'zh-CN';
+  expect(dockerRegistryPrompt.initialValue?.({ lang: 'en-US' })).toBe('registry.cn-shanghai.aliyuncs.com/nocobase/nocobase');
   expect(dockerRegistryPrompt.initialValue?.({ lang: 'zh-CN' })).toBe('registry.cn-shanghai.aliyuncs.com/nocobase/nocobase');
-  expect(dockerRegistryPrompt.initialValue?.({ lang: 'en-US' })).toBe('nocobase/nocobase');
+  expect(dockerRegistryPrompt.initialValue?.({})).toBe('registry.cn-shanghai.aliyuncs.com/nocobase/nocobase');
+  process.env.NB_LOCALE = 'en-US';
+  expect(dockerRegistryPrompt.initialValue?.({ lang: 'zh-CN' })).toBe('nocobase/nocobase');
 
   expect(dockerPlatformPrompt.type).toBe('select');
   expect(dockerPlatformPrompt.initialValue).toBe('auto');
@@ -328,7 +477,55 @@ test('docker image defaults follow app language', () => {
   expect(dockerPlatformPrompt.hidden?.({ source: 'npm' })).toBe(true);
 });
 
-test('install download prompt options pass app language into docker image defaults', () => {
+test('docker registry placeholder follows locale copy', () => {
+  const dockerRegistryPrompt = Download.prompts.dockerRegistry;
+
+  expect(resolveLocalizedText(dockerRegistryPrompt.placeholder, { locale: 'en-US' })).toBe(
+    'nocobase/nocobase',
+  );
+  expect(resolveLocalizedText(dockerRegistryPrompt.placeholder, { locale: 'zh-CN' })).toBe(
+    'registry.cn-shanghai.aliyuncs.com/nocobase/nocobase',
+  );
+});
+
+test('version prompt uses presets and reveals otherVersion when needed', () => {
+  const versionPrompt = Download.prompts.version;
+  const otherVersionPrompt = Download.prompts.otherVersion;
+
+  expect(versionPrompt.type).toBe('select');
+  expect(versionPrompt.variant).toBe('radio');
+  expect(versionPrompt.initialValue).toBe('beta');
+  expect(versionPrompt.yesInitialValue).toBe('beta');
+  expect(
+    versionPrompt.options[0] && typeof versionPrompt.options[0] !== 'string'
+      ? versionPrompt.options[0].disabled
+      : undefined,
+  ).toBe(true);
+  expect(resolveLocalizedText(versionPrompt.options?.[0] && typeof versionPrompt.options[0] !== 'string' ? versionPrompt.options[0].hint : undefined, { locale: 'zh-CN' })).toContain('稳定版');
+  expect(resolveLocalizedText(versionPrompt.options?.[1] && typeof versionPrompt.options[1] !== 'string' ? versionPrompt.options[1].hint : undefined, { locale: 'zh-CN' })).toContain('测试版');
+  expect(resolveLocalizedText(versionPrompt.options?.[2] && typeof versionPrompt.options[2] !== 'string' ? versionPrompt.options[2].hint : undefined, { locale: 'zh-CN' })).toContain('开发版');
+  expect(otherVersionPrompt.type).toBe('text');
+  expect(otherVersionPrompt.hidden?.({ version: 'alpha' })).toBe(true);
+  expect(otherVersionPrompt.hidden?.({ version: 'other' })).toBe(false);
+});
+
+test('builtin database image defaults follow NB_LOCALE', async () => {
+  process.env.NB_LOCALE = 'zh-CN';
+  const { default: InstallWithZhLocale } = await import('../commands/install.js');
+  const builtinDbImagePrompt = InstallWithZhLocale.dbPrompts.builtinDbImage;
+
+  expect(builtinDbImagePrompt.initialValue?.({ dbDialect: 'postgres' })).toBe(
+    'registry.cn-shanghai.aliyuncs.com/nocobase/postgres:16',
+  );
+  expect(builtinDbImagePrompt.initialValue?.({ dbDialect: 'mysql' })).toBe(
+    'registry.cn-shanghai.aliyuncs.com/nocobase/mysql:8',
+  );
+  expect(builtinDbImagePrompt.initialValue?.({ dbDialect: 'mariadb' })).toBe(
+    'registry.cn-shanghai.aliyuncs.com/nocobase/mariadb:11',
+  );
+});
+
+test('install download prompt options follow CLI locale for docker registry defaults', () => {
   const installStatics = (
     Install as unknown as {
       buildDownloadPromptOptionsForInstall: (
@@ -344,31 +541,34 @@ test('install download prompt options pass app language into docker image defaul
         envName: string,
         yes: boolean,
       ) => Record<string, unknown>;
+      buildPresetValuesFromFlags: (flags: Record<string, unknown>) => Record<string, unknown>;
     }
   );
 
+  process.env.NB_LOCALE = 'zh-CN';
   const zhOptions = installStatics.buildDownloadPromptOptionsForInstall(
     {
-      lang: 'zh-CN',
+      lang: 'en-US',
       appRootPath: './apps/zh-demo',
     },
     'zh-demo',
   );
-  expect(zhOptions.initialValues.lang).toBe('zh-CN');
+  expect(zhOptions.initialValues.lang).toBe('en-US');
   expect(zhOptions.initialValues.dockerRegistry).toBe('registry.cn-shanghai.aliyuncs.com/nocobase/nocobase');
   expect(zhOptions.initialValues.outputDir).toBe('./apps/zh-demo');
-  expect(zhOptions.values.lang).toBe('zh-CN');
+  expect(zhOptions.values.lang).toBe('en-US');
 
+  process.env.NB_LOCALE = 'en-US';
   const enOptions = installStatics.buildDownloadPromptOptionsForInstall(
     {
-      lang: 'en-US',
+      lang: 'zh-CN',
       appRootPath: './apps/en-demo',
     },
     'en-demo',
   );
-  expect(enOptions.initialValues.lang).toBe('en-US');
+  expect(enOptions.initialValues.lang).toBe('zh-CN');
   expect(enOptions.initialValues.dockerRegistry).toBe('nocobase/nocobase');
-  expect(enOptions.values.lang).toBe('en-US');
+  expect(enOptions.values.lang).toBe('zh-CN');
 
   const originalArgv = process.argv;
   process.argv = ['node', 'nb', 'install', '--yes'];
@@ -395,6 +595,65 @@ test('install download prompt options pass app language into docker image defaul
     expect(preset.source).toBe('docker');
     expect(preset.version).toBe('alpha');
     expect(preset.outputDir).toBe('./apps/en-demo');
+
+    const refPreset = installStatics.buildDownloadPresetValuesForInstall(
+      {
+        version: 'next',
+        replace: false,
+        'dev-dependencies': false,
+        build: true,
+        'build-dts': false,
+        'docker-save': false,
+      },
+      {
+        lang: 'en-US',
+        appRootPath: './apps/en-demo',
+      },
+      'en-demo',
+      false,
+    );
+    expect(refPreset.version).toBe('other');
+    expect(refPreset.otherVersion).toBe('next');
+
+    const resumePreset = installStatics.buildDownloadPresetValuesForInstall(
+      {
+        resume: true,
+        replace: false,
+        'dev-dependencies': false,
+        build: true,
+        'build-dts': false,
+        'docker-save': false,
+      },
+      {
+        lang: 'en-US',
+        appRootPath: './apps/en-demo',
+      },
+      'en-demo',
+      false,
+    );
+    expect(resumePreset.replace).toBe(true);
+  } finally {
+    process.argv = originalArgv;
+  }
+
+  process.argv = ['node', 'nb', 'install', '--no-builtin-db'];
+  try {
+    const preset = installStatics.buildPresetValuesFromFlags({
+      'builtin-db': false,
+    });
+    expect(preset.builtinDb).toBe(false);
+  } finally {
+    process.argv = originalArgv;
+  }
+
+  process.argv = ['node', 'nb', 'install', '--db-host', 'db.example.com'];
+  try {
+    const preset = installStatics.buildPresetValuesFromFlags({
+      'builtin-db': true,
+      'db-host': 'db.example.com',
+    });
+    expect(preset.dbHost).toBe('db.example.com');
+    expect(preset.builtinDb).toBe(false);
   } finally {
     process.argv = originalArgv;
   }
